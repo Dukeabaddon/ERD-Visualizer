@@ -5,3 +5,13 @@ node_modules/
 
 AGENTS.md
 .vscode/
+
+.DS_Store
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+dist/
+
+.gitignore
