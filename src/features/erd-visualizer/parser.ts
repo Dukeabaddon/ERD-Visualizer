@@ -34,13 +34,121 @@ export function parseSchemaFromText(text: string): SchemaModel {
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
     try {
       const obj = JSON.parse(text);
-      const parsed = SchemaShape.safeParse(obj);
-      if (parsed.success) return fromJsonShape(parsed.data);
+      // Accept canonical shape, but also try to normalize several alternate JSON ERD shapes
+      let parsed = SchemaShape.safeParse(obj);
+      // If parsed ok but entities have no columns (because input used `attributes`), try normalization
+      if (parsed.success) {
+        const hasCols = Array.isArray(parsed.data.entities) && parsed.data.entities.some((e: any) => Array.isArray(e.columns) && e.columns.length > 0);
+        if (hasCols) return fromJsonShape(parsed.data);
+        // otherwise fall through to normalization
+      }
+      const normalized = normalizeAlternateJsonShape(obj);
+      if (normalized) {
+        const parsedNorm = SchemaShape.safeParse(normalized);
+        if (parsedNorm.success) return fromJsonShape(parsedNorm.data);
+      }
     } catch (_) {
       // fallthrough to SQL
     }
   }
   return parseSql(text);
+}
+
+// Heuristic normalizer: map alternate ERD JSON shapes into the canonical schema shape
+function normalizeAlternateJsonShape(obj: any) {
+  if (!obj || !Array.isArray(obj.entities)) return null;
+  const norm: any = { entities: [], relationships: [] };
+
+  function getPrimaryFromEntity(e: any) {
+    if (!e) return undefined;
+    if (e.primaryKey) return e.primaryKey;
+    // if columns array with primary flag exists, return that
+    if (Array.isArray(e.columns)) {
+      const pk = e.columns.find((c: any) => c.primary || c.primary === true);
+      if (pk) return pk.name;
+    }
+    // fallback to first attribute/column
+    if (Array.isArray(e.attributes) && e.attributes.length) return e.attributes[0];
+    if (Array.isArray(e.columns) && e.columns.length) return e.columns[0].name;
+    return undefined;
+  }
+
+  // first pass: convert entities and attributes -> columns
+  for (const e of obj.entities) {
+    const cols: any[] = [];
+    if (Array.isArray(e.columns)) {
+      for (const c of e.columns) cols.push({ name: c.name, type: c.type, primary: !!c.primary, unique: !!c.unique, nullable: !!c.nullable });
+    }
+    if (Array.isArray(e.attributes)) {
+      for (const a of e.attributes) {
+        // avoid duplicates
+        if (!cols.find(c => c.name === a)) cols.push({ name: a });
+      }
+    }
+    const pk = getPrimaryFromEntity(e);
+    if (pk && !cols.find(c => c.name === pk)) cols.unshift({ name: pk, primary: true });
+    else if (pk) {
+      const c = cols.find(cc => cc.name === pk); if (c) c.primary = true;
+    }
+    norm.entities.push({ name: e.name, columns: cols });
+  }
+
+  // helper to lookup entity by name from original array
+  function findOrigEntity(name: string) {
+    return obj.entities.find((x: any) => x.name === name);
+  }
+
+  // helper to find column in an entity (by heuristics)
+  function findViaColumn(viaEntity: any, term: string) {
+    if (!viaEntity) return undefined;
+    const cols = Array.isArray(viaEntity.columns) ? viaEntity.columns.map((c: any) => c.name) : (Array.isArray(viaEntity.attributes) ? viaEntity.attributes : []);
+    if (!cols) return undefined;
+    // try exact match against term + 'id' or term + 'Id' variants
+    const variants = [term + 'ID', term + 'Id', term + 'id', term];
+    for (const v of variants) {
+      const found = cols.find((c: string) => c.toLowerCase() === v.toLowerCase());
+      if (found) return found;
+    }
+    // fallback: find any column that contains the term
+    const fuzzy = cols.find((c: string) => c.toLowerCase().includes(term.toLowerCase()));
+    return fuzzy;
+  }
+
+  // second pass: convert nested relationships into top-level relationships
+  for (const e of obj.entities) {
+    if (!Array.isArray(e.relationships)) continue;
+    for (const r of e.relationships) {
+      if (r.target && r.foreignKey) {
+        norm.relationships.push({ from: `${e.name}.${r.foreignKey}`, to: `${r.target}.${r.foreignKey}`, cardinality: r.cardinality });
+        continue;
+      }
+      // handle many-to-many via join table
+      if (r.type && typeof r.type === 'string' && r.type.toLowerCase().includes('many') && r.via) {
+        const via = r.via;
+        const viaEntity = findOrigEntity(via);
+        const targetEntity = findOrigEntity(r.target);
+        const sourcePk = getPrimaryFromEntity(e) || (Array.isArray(e.attributes) ? e.attributes[0] : undefined);
+        const targetPk = getPrimaryFromEntity(targetEntity) || (Array.isArray(targetEntity && targetEntity.attributes) ? targetEntity.attributes[0] : undefined);
+        const viaColForSource = viaEntity ? findViaColumn(viaEntity, e.name) : undefined;
+        const viaColForTarget = viaEntity ? findViaColumn(viaEntity, r.target) : undefined;
+        if (viaEntity && viaColForSource && sourcePk) {
+          norm.relationships.push({ from: `${e.name}.${sourcePk}`, to: `${via}.${viaColForSource}`, cardinality: r.cardinality });
+        }
+        if (viaEntity && viaColForTarget && targetPk) {
+          norm.relationships.push({ from: `${r.target}.${targetPk}`, to: `${via}.${viaColForTarget}`, cardinality: r.cardinality });
+        }
+      }
+    }
+  }
+
+  // If no relationships were added but there is a top-level relationships array in original, include them
+  if (Array.isArray(obj.relationships) && obj.relationships.length) {
+    for (const r of obj.relationships) {
+      norm.relationships.push(r);
+    }
+  }
+
+  return norm;
 }
 
 function fromJsonShape(obj: z.infer<typeof SchemaShape>): SchemaModel {

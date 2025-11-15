@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { parseSchemaFromText } from './parser';
 import { getWebviewContent } from './webview';
+import * as fs from 'fs';
+import * as path from 'path';
 
 export function registerCommands(context: vscode.ExtensionContext): vscode.Disposable[] {
   const openCmd = vscode.commands.registerCommand('erdVisualizer.open', async () => {
@@ -59,7 +61,31 @@ async function openVisualizerPanel(context: vscode.ExtensionContext, text: strin
     retainContextWhenHidden: true,
   });
 
-  panel.webview.html = getWebviewContent(panel.webview, context.extensionUri, model);
+  // attempt to read the authoritative visual spec from openspec (design-notes.md)
+  let visualSpec: any = undefined;
+  try {
+    const specPath = path.join(context.extensionUri.fsPath, 'openspec', 'changes', 'ui-enhancement', 'design-notes.md');
+    if (fs.existsSync(specPath)) {
+      const raw = fs.readFileSync(specPath, 'utf8');
+      const m = raw.match(/```json\s*([\s\S]*?)\s*```/m);
+      if (m && m[1]) visualSpec = JSON.parse(m[1]);
+    }
+  } catch (e) {
+    // ignore parse/read errors and fall back to defaults in the webview
+    visualSpec = undefined;
+  }
+  // default to using bordered entities as the new default (no toggle)
+  try {
+    if (visualSpec) {
+      if (typeof visualSpec.useBorderedEntities === 'undefined') visualSpec.useBorderedEntities = true;
+    } else {
+      visualSpec = { useBorderedEntities: true };
+    }
+  } catch (e) {
+    // ignore
+  }
+
+  panel.webview.html = getWebviewContent(panel.webview, context.extensionUri, model, visualSpec);
 
   // handle messages from webview
   panel.webview.onDidReceiveMessage(async (msg: any) => {
@@ -80,6 +106,15 @@ async function openVisualizerPanel(context: vscode.ExtensionContext, text: strin
             break;
           }
         }
+      }
+    } else if (msg.command === 'saveLayout') {
+      try {
+        if (sourceUri) {
+          const key = 'erd.layout:' + sourceUri.toString();
+          await context.workspaceState.update(key, msg.layout);
+        }
+      } catch (e) {
+        // ignore
       }
     }
   });
