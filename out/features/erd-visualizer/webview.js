@@ -3,7 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.getWebviewContent = getWebviewContent;
 function getWebviewContent(webview, extensionUri, model) {
     const nonce = getNonce();
-    const data = JSON.stringify(model);
+    const data = JSON.stringify(model || { entities: [], relationships: [] });
     return `<!doctype html>
 <html>
 <head>
@@ -14,13 +14,16 @@ function getWebviewContent(webview, extensionUri, model) {
 <style>
   body { font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 0; height: 100vh; display:flex; flex-direction:column; }
   #toolbar { padding: 8px; background: #f3f3f3; border-bottom: 1px solid #ddd; display:flex; gap:8px; align-items:center }
-  #canvasWrap { flex:1; overflow: auto; position:relative; }
+  #canvasWrap { flex:1; overflow: auto; position:relative; background: #2b2b2b; }
   svg { width:100%; height:100%; }
-  .node { fill: #fff; stroke: #333; stroke-width:1px; }
-  .node-title { font-weight:600; }
-  .edge { stroke:#666; stroke-width:1.5px; fill:none }
+  .node { fill: #ffffff; stroke: #333; stroke-width:1px; }
+  .node-title { font-weight:600; font-size:13px; fill:#111 }
+  .col { font-size:12px; fill:#111 }
+  .col-type { font-size:11px; fill:#666 }
+  .edge { stroke:#666; stroke-width:1.6px; fill:none }
   .badge { font-size: 11px; fill:#555 }
   .details { position: absolute; right: 8px; top: 48px; width: 280px; background: rgba(255,255,255,0.95); border: 1px solid #ddd; padding: 8px; max-height: 80vh; overflow:auto }
+  button { padding: 6px 8px }
 </style>
 </head>
 <body>
@@ -28,9 +31,9 @@ function getWebviewContent(webview, extensionUri, model) {
     <button id="fit">Fit</button>
     <button id="exportSvg">Export SVG</button>
     <button id="exportPng">Export PNG</button>
-    <span id="info"></span>
+    <span id="info" style="margin-left:8px;color:#333"></span>
   </div>
-  <div id="canvasWrap"><svg id="svgRoot"></svg></div>
+  <div id="canvasWrap"><svg id="svgRoot" xmlns="http://www.w3.org/2000/svg"></svg></div>
   <div id="details" class="details" style="display:none"></div>
 
 <script nonce="${nonce}">
@@ -38,157 +41,225 @@ function getWebviewContent(webview, extensionUri, model) {
   const model = ${data};
   const svg = document.getElementById('svgRoot');
   const NS = 'http://www.w3.org/2000/svg';
-  const PAD_X = 20, PAD_Y = 20, COL_W = 200, ROW_H = 24;
 
-  // simple layout: columns of nodes placed in grid by number of cols
-  const cols = Math.max(1, Math.ceil(Math.sqrt(model.entities.length)));
-  const rows = Math.ceil(model.entities.length / cols);
+  // layout constants
+  const PAD_X = 36, PAD_Y = 36, NODE_W = 260, ROW_H = 26, HEADER_H = 34;
+  const PALETTE = ['#E6B800','#4FBF77','#4EA8F5','#A66BFF','#FF7A7A'];
 
+  if (!model || !model.entities || model.entities.length === 0) {
+    svg.innerHTML = '';
+    const t = document.createElementNS(NS, 'text');
+    t.setAttribute('x', '20');
+    t.setAttribute('y', '40');
+    t.setAttribute('fill', '#999');
+    t.textContent = 'No entities found in the opened file.';
+    svg.appendChild(t);
+    document.getElementById('info').textContent = '0 entities, 0 relationships';
+    return;
+  }
+
+  // compute grid layout
+  const total = model.entities.length;
+  const cols = Math.max(1, Math.ceil(Math.sqrt(total)));
   model.entities.forEach((e, idx) => {
     const col = idx % cols;
     const row = Math.floor(idx / cols);
-    const x = PAD_X + col * (COL_W + PAD_X);
-    const y = PAD_Y + row * (ROW_H * Math.max(3, e.columns.length) + PAD_Y);
-    e._x = x; e._y = y;
+    const x = PAD_X + col * (NODE_W + PAD_X);
+    const h = Math.max(HEADER_H + (e.columns ? e.columns.length * ROW_H : ROW_H), HEADER_H + ROW_H * 3);
+    const y = PAD_Y + row * (h + PAD_Y);
+    e._x = x; e._y = y; e._w = NODE_W; e._h = h; e._idx = idx;
   });
 
-  // helper to render inline glyphs for PK/FK
-  function iconSvgForColumn(col) {
-    if (col.primary) return '<svg width="12" height="12" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M12 2a5 5 0 00-5 5v2H5v8h14v-8h-2V7a5 5 0 00-5-5zm-1 9V7a1 1 0 012 0v4h-2z" fill="#444"/></svg>';
-    if (col.foreign) return '<svg width="12" height="12" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M10 13a5 5 0 017-7l1 1-1 1a3 3 0 00-4 4l-1 1-3-3 1-1 3 3z" fill="#444"/></svg>';
-    return '';
+  // helpers
+  function createText(text, x, y, className) {
+    const t = document.createElementNS(NS, 'text');
+    t.setAttribute('x', String(x));
+    t.setAttribute('y', String(y));
+    if (className) t.setAttribute('class', className);
+    t.setAttribute('dominant-baseline', 'middle');
+    t.textContent = text;
+    return t;
   }
 
-  // render nodes
+  function indexOfColumn(entity, name) {
+    if (!entity || !entity.columns) return 0;
+    const i = entity.columns.findIndex(c => c.name === name);
+    return i === -1 ? 0 : i;
+  }
+
+  function anchorForColumn(entity, colName, other) {
+    // compute which side (left/right/top/bottom) to anchor to and return {x,y,side}
+    const ex = entity._x, ey = entity._y, ew = entity._w, eh = entity._h;
+    const ox = other._x + other._w/2, oy = other._y + other._h/2;
+    const cx = ex + ew/2, cy = ey + eh/2;
+    const dx = ox - cx, dy = oy - cy;
+    const idx = indexOfColumn(entity, colName);
+    if (Math.abs(dx) > Math.abs(dy)) {
+      // left or right
+      if (dx > 0) {
+        return { x: ex + ew, y: ey + HEADER_H/2 + idx * ROW_H, side: 'right' };
+      }
+      return { x: ex, y: ey + HEADER_H/2 + idx * ROW_H, side: 'left' };
+    }
+    // top or bottom
+    if (dy > 0) {
+      return { x: ex + 20 + Math.min(ew - 40, idx * 10), y: ey + eh, side: 'bottom' };
+    }
+    return { x: ex + 20 + Math.min(ew - 40, idx * 10), y: ey, side: 'top' };
+  }
+
+  function bezierPath(a, b) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    const offset = Math.min(200, Math.max(40, dist * 0.35));
+    const cx1 = a.x + (a.side === 'left' ? -offset : (a.side === 'right' ? offset : 0));
+    const cy1 = a.y + (a.side === 'top' ? -offset : (a.side === 'bottom' ? offset : 0));
+    const cx2 = b.x + (b.side === 'left' ? -offset : (b.side === 'right' ? offset : 0));
+    const cy2 = b.y + (b.side === 'top' ? -offset : (b.side === 'bottom' ? offset : 0));
+  return 'M ' + a.x + ' ' + a.y + ' C ' + cx1 + ' ' + cy1 + ' ' + cx2 + ' ' + cy2 + ' ' + b.x + ' ' + b.y;
+  }
+
+  // draw nodes
   model.entities.forEach(e => {
-    const g = document.createElementNS(NS, 'g');
+  const g = document.createElementNS(NS, 'g');
   g.setAttribute('transform', 'translate(' + e._x + ',' + e._y + ')');
     g.setAttribute('data-entity', e.name);
 
-    const w = COL_W;
-    const h = Math.max(30, e.columns.length * ROW_H + 30);
-
+    // outer rect
     const rect = document.createElementNS(NS, 'rect');
-    rect.setAttribute('width', String(w));
-    rect.setAttribute('height', String(h));
-    rect.setAttribute('rx', '6');
+    rect.setAttribute('width', String(e._w));
+    rect.setAttribute('height', String(e._h));
+    rect.setAttribute('rx', '8');
     rect.setAttribute('class', 'node');
+    rect.setAttribute('fill', '#ffffff');
+    rect.setAttribute('stroke', '#aaa');
     g.appendChild(rect);
 
-    const title = document.createElementNS(NS, 'text');
-    title.setAttribute('x', '10');
-    title.setAttribute('y', '18');
-    title.setAttribute('class', 'node-title');
-    title.textContent = e.name;
+    // header band
+    const header = document.createElementNS(NS, 'rect');
+    header.setAttribute('x', '0');
+    header.setAttribute('y', '0');
+    header.setAttribute('width', String(e._w));
+    header.setAttribute('height', String(HEADER_H));
+    header.setAttribute('fill', PALETTE[e._idx % PALETTE.length]);
+    header.setAttribute('rx', '8');
+    header.setAttribute('stroke', PALETTE[e._idx % PALETTE.length]);
+    g.appendChild(header);
+
+    // title
+    const title = createText(e.name, 12, HEADER_H/2, 'node-title');
     g.appendChild(title);
 
-    e.columns.forEach((c, i) => {
-      const y = 36 + i * ROW_H;
-      // create a group for icon + text
-      const rowG = document.createElementNS(NS, 'g');
-      rowG.setAttribute('transform', 'translate(0,' + y + ')');
+    // columns
+    (e.columns || []).forEach((c, i) => {
+      const y = HEADER_H + 10 + i * ROW_H;
+      const colG = document.createElementNS(NS, 'g');
+  colG.setAttribute('transform', 'translate(0,' + y + ')');
 
-      // icon (render as foreignObject for inline SVG or use SVG fragments)
-      const iconSvg = iconSvgForColumn(c);
-      if (iconSvg) {
-        const fo = document.createElementNS(NS, 'foreignObject');
-        fo.setAttribute('x', '6');
-        fo.setAttribute('y', String(-10));
-        fo.setAttribute('width', '14');
-        fo.setAttribute('height', '14');
-        fo.innerHTML = iconSvg;
-        rowG.appendChild(fo);
+      // left-side name
+      const nameText = createText(c.name, 12, 0, 'col');
+      nameText.setAttribute('cursor', 'pointer');
+      nameText.addEventListener('click', () => showDetails(e, c));
+      colG.appendChild(nameText);
+
+      // right-side type and pk marker
+      const typeText = createText((c.type || '') + (c.primary ? ' pk' : ''), e._w - 12, 0, 'col-type');
+      typeText.setAttribute('text-anchor', 'end');
+      colG.appendChild(typeText);
+
+      // small pk/fk glyph as circle or diamond
+      if (c.primary || c.foreign) {
+        const glyph = document.createElementNS(NS, 'circle');
+        glyph.setAttribute('cx', '6');
+        glyph.setAttribute('cy', '0');
+        glyph.setAttribute('r', '4');
+        glyph.setAttribute('fill', c.primary ? '#444' : '#777');
+        colG.appendChild(glyph);
       }
 
-      const t = document.createElementNS(NS, 'text');
-      const textX = iconSvg ? 26 : 10;
-      t.setAttribute('x', String(textX));
-      t.setAttribute('y', '0');
-      t.setAttribute('class', 'col');
-      t.setAttribute('dominant-baseline', 'middle');
-      t.textContent = c.name;
-      t.style.cursor = 'pointer';
-      t.addEventListener('click', () => showDetails(e, c));
-      rowG.appendChild(t);
-      g.appendChild(rowG);
+      g.appendChild(colG);
     });
 
     svg.appendChild(g);
   });
 
-  // render edges with smoother routing
-  function anchorPoint(entity, other) {
-    const ex = entity._x, ey = entity._y;
-    const ew = COL_W, eh = Math.max(30, entity.columns.length * ROW_H + 30);
-    const cx = ex + ew/2, cy = ey + eh/2;
-    const ox = other._x + COL_W/2, oy = other._y + Math.max(30, other.columns.length * ROW_H + 30)/2;
-    const dx = ox - cx, dy = oy - cy;
-    // decide side
-    if (Math.abs(dx) > Math.abs(dy)) {
-      // horizontal anchor
-      if (dx > 0) return { x: ex + ew, y: ey + 20 + indexOfColumn(entity, '') * ROW_H + 6, side: 'right' };
-      return { x: ex, y: ey + 20 + indexOfColumn(entity, '') * ROW_H + 6, side: 'left' };
-    } else {
-      if (dy > 0) return { x: ex + ew/2, y: ey + eh, side: 'bottom' };
-      return { x: ex + ew/2, y: ey, side: 'top' };
-    }
-  }
-
-  function anchorForColumn(entity, colName, other) {
-    const base = anchorPoint(entity, other);
-    // try to position anchor y based on column index when anchored left/right
-    const idx = indexOfColumn(entity, colName);
-    if (base.side === 'right' || base.side === 'left') {
-      const y = entity._y + 20 + idx * ROW_H + 6;
-      return { x: base.x, y, side: base.side };
-    } else {
-      // top/bottom anchors: x align to column position (approx)
-      const x = entity._x + 10 + Math.min(120, idx * 6);
-      return { x, y: base.y, side: base.side };
-    }
-  }
-
-  function bezierPath(sx, sy, ex, ey) {
-    const dx = ex - sx;
-    const dy = ey - sy;
-    const dist = Math.sqrt(dx*dx + dy*dy);
-    const offset = Math.min(160, Math.max(30, dist * 0.3));
-    // control points along the line normal to the direction
-    const cx1 = sx + (dx > 0 ? offset : -offset);
-    const cy1 = sy;
-    const cx2 = ex + (dx > 0 ? -offset : offset);
-    const cy2 = ey;
-    return 'M ' + sx + ' ' + sy + ' C ' + cx1 + ' ' + cy1 + ' ' + cx2 + ' ' + cy2 + ' ' + ex + ' ' + ey;
-  }
-
-  model.relationships.forEach((r, idx) => {
+  // draw edges
+  model.relationships = model.relationships || [];
+  model.relationships.forEach(r => {
     const from = model.entities.find(en => en.name === r.from.entity);
     const to = model.entities.find(en => en.name === r.to.entity);
     if (!from || !to) return;
     const a = anchorForColumn(from, r.from.column, to);
     const b = anchorForColumn(to, r.to.column, from);
-    const path = document.createElementNS(NS, 'path');
-    const d = bezierPath(a.x, a.y, b.x, b.y);
-    path.setAttribute('d', d);
+
+  const path = document.createElementNS(NS, 'path');
+  path.setAttribute('d', bezierPath(a, b));
     path.setAttribute('class', 'edge');
+    path.setAttribute('stroke', '#666');
+    path.setAttribute('fill', 'none');
     svg.appendChild(path);
 
-    // label
-    const mx = (a.x + b.x)/2;
-    const my = (a.y + b.y)/2;
-    const text = document.createElementNS(NS, 'text');
-    text.setAttribute('x', String(mx));
-    text.setAttribute('y', String(my));
-    text.setAttribute('class', 'badge');
-    text.textContent = r.cardinality || '';
-    svg.appendChild(text);
+    // optional label
+    if (r.cardinality) {
+      const mx = (a.x + b.x) / 2;
+      const my = (a.y + b.y) / 2;
+      const text = createText(r.cardinality, mx, my, 'badge');
+      svg.appendChild(text);
+    }
   });
 
-  function indexOfColumn(entity, colName) {
-    if (!entity || !entity.columns) return 0;
-    const i = entity.columns.findIndex(c => c.name === colName);
-    return i === -1 ? 0 : i;
-  }
+  document.getElementById('fit').addEventListener('click', () => {
+    try {
+      const bbox = svg.getBBox();
+      svg.setAttribute('viewBox', String(bbox.x - 20) + ' ' + String(bbox.y - 20) + ' ' + String(bbox.width + 40) + ' ' + String(bbox.height + 40));
+    } catch (e) { /* ignore */ }
+  });
+
+  document.getElementById('exportSvg').addEventListener('click', () => {
+    try {
+      const clone = svg.cloneNode(true);
+      const bbox = svg.getBBox();
+      const bg = document.createElementNS(NS, 'rect');
+      bg.setAttribute('x', String(bbox.x - 20));
+      bg.setAttribute('y', String(bbox.y - 20));
+      bg.setAttribute('width', String(bbox.width + 40));
+      bg.setAttribute('height', String(bbox.height + 40));
+      bg.setAttribute('fill', '#ffffff');
+      clone.insertBefore(bg, clone.firstChild);
+      const serializer = new XMLSerializer();
+      const svgStr = serializer.serializeToString(clone);
+      const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'erd.svg'; a.click(); URL.revokeObjectURL(url);
+    } catch (e) { console.error(e); }
+  });
+
+  document.getElementById('exportPng').addEventListener('click', () => {
+    try {
+      const serializer = new XMLSerializer();
+      const svgStr = serializer.serializeToString(svg);
+      const svgBlob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+      const url = URL.createObjectURL(svgBlob);
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(800, img.width);
+        canvas.height = Math.max(600, img.height);
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff'; ctx.fillRect(0,0,canvas.width,canvas.height);
+        ctx.drawImage(img, 0,0);
+        canvas.toBlob((b) => {
+          const u = URL.createObjectURL(b); const a = document.createElement('a'); a.href = u; a.download = 'erd.png'; a.click(); URL.revokeObjectURL(u);
+        });
+        URL.revokeObjectURL(url);
+      };
+      img.src = url;
+    } catch (e) { console.error(e); }
+  });
+
+  document.getElementById('info').textContent = String(model.entities.length) + ' entities, ' + String(model.relationships.length) + ' relationships';
 
   function showDetails(entity, column) {
     const details = document.getElementById('details');
@@ -203,52 +274,6 @@ function getWebviewContent(webview, extensionUri, model) {
     });
   }
 
-  document.getElementById('fit').addEventListener('click', () => {
-    // naive fit: set viewBox to bounds
-  const bbox = svg.getBBox();
-  svg.setAttribute('viewBox', (bbox.x-20) + ' ' + (bbox.y-20) + ' ' + (bbox.width+40) + ' ' + (bbox.height+40));
-  });
-
-  document.getElementById('exportSvg').addEventListener('click', () => {
-    const serializer = new XMLSerializer();
-    const svgStr = serializer.serializeToString(svg);
-    const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'erd.svg';
-    a.click();
-    URL.revokeObjectURL(url);
-  });
-
-  document.getElementById('exportPng').addEventListener('click', () => {
-    const serializer = new XMLSerializer();
-    const svgStr = serializer.serializeToString(svg);
-    const img = new Image();
-    const svgBlob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
-    const url = URL.createObjectURL(svgBlob);
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = img.width || 1200;
-      canvas.height = img.height || 800;
-      const ctx = canvas.getContext('2d');
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0,0,canvas.width,canvas.height);
-      ctx.drawImage(img, 0,0);
-      canvas.toBlob((b) => {
-        const u = URL.createObjectURL(b);
-        const a = document.createElement('a');
-        a.href = u;
-        a.download = 'erd.png';
-        a.click();
-        URL.revokeObjectURL(u);
-      });
-      URL.revokeObjectURL(url);
-    };
-    img.src = url;
-  });
-
-  document.getElementById('info').textContent = model.entities.length + ' entities, ' + model.relationships.length + ' relationships';
 })();
 </script>
 </body>
