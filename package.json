@@ -1,0 +1,58 @@
+{
+  "name": "erd-visualizer-extension",
+  "version": "0.0.0",
+  "main": "./out/extension.js",
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "dependencies": {
+    "@fission-ai/openspec": "^0.14.0",
+    "zod": "^3.22.2"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "erdVisualizer.open",
+        "title": "ERD: Visualize current schema"
+      },
+      {
+        "command": "erdVisualizer.openForEditor",
+        "title": "ERD: Visualize current editor"
+      },
+      {
+        "command": "erdVisualizer.openFromFile",
+        "title": "ERD: Visualize schema from file"
+      }
+    ]
+    ,
+    "menus": {
+      "editor/title": [
+        {
+          "command": "erdVisualizer.openForEditor",
+          "when": "resourceLangId == json || resourceLangId == sql || resourceExtname == .json || resourceExtname == .sql",
+          "group": "navigation",
+          "icon": {
+            "dark": "resources/icons/erd-dark.svg",
+            "light": "resources/icons/erd-light.svg"
+          }
+        }
+      ]
+    }
+  },
+  "activationEvents": [
+    "onCommand:erdVisualizer.open",
+    "onCommand:erdVisualizer.openForEditor",
+    "onCommand:erdVisualizer.openFromFile"
+  ],
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/vscode": "^1.106.0",
+    "typescript": "^5.9.3"
+  }
+  ,
+  "scripts": {
+    "compile": "npx tsc -p tsconfig.json",
+    "postcompile": "node ./scripts/copy-resources.js",
+    "test:contrib": "node ./test/validate-editor-icon.js"
+  }
+}

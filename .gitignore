@@ -1,0 +1,7 @@
+node_modules/
+/openspec/
+.github
+.augment/
+
+AGENTS.md
+.vscode/
