@@ -1,7 +1,23 @@
-import { SchemaModel, Entity, Column, Relationship } from './model';
+import { SchemaModel, Entity, Column, Relationship, EntityKind, IconHint, PaletteName } from './model';
 import { z } from 'zod';
+import { Parser as SqlAstParser } from 'node-sql-parser';
+
+type SqlStatement = any;
+
+const SQL_DIALECTS = ['postgresql', 'mysql', 'sqlite', 'mssql'];
+const sqlParser = new SqlAstParser();
 
 // Very small SQL/JSON parser to extract tables, columns, PKs, and FKs for common patterns
+
+const LayoutSchema = z
+  .object({
+    x: z.number(),
+    y: z.number(),
+    width: z.number().optional(),
+    height: z.number().optional(),
+  })
+  .partial()
+  .optional();
 
 const ColumnSchema = z.object({
   name: z.string(),
@@ -9,11 +25,17 @@ const ColumnSchema = z.object({
   primary: z.boolean().optional(),
   unique: z.boolean().optional(),
   nullable: z.boolean().optional(),
+  comment: z.string().optional(),
 });
 
 const EntitySchema = z.object({
   name: z.string(),
   columns: z.array(ColumnSchema).optional(),
+  kind: z.enum(['table', 'view']).optional(),
+  comment: z.string().optional(),
+  iconHint: z.string().optional(),
+  palette: z.string().optional(),
+  layout: LayoutSchema,
 });
 
 const RelationshipSchema = z.object({
@@ -31,6 +53,7 @@ const SchemaShape = z.object({
 
 export function parseSchemaFromText(text: string): SchemaModel {
   const trimmed = text.trim();
+  if (!trimmed) return { entities: [], relationships: [] };
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
     try {
       const obj = JSON.parse(text);
@@ -51,104 +74,453 @@ export function parseSchemaFromText(text: string): SchemaModel {
       // fallthrough to SQL
     }
   }
-  return parseSql(text);
+  return parseSqlWithAst(text);
+}
+
+function parseSqlWithAst(sql: string): SchemaModel {
+  const ast = tryAstify(sql);
+  if (!ast) return legacyParseSql(sql);
+  const builder = new AstSchemaBuilder();
+  for (const stmt of ast) builder.applyStatement(stmt);
+  builder.applyCommentStatements(sql);
+  const model = builder.build();
+  if (!model.entities.length && !model.relationships.length) {
+    return legacyParseSql(sql);
+  }
+  return model;
+}
+
+function tryAstify(sql: string): SqlStatement[] | null {
+  for (const dialect of SQL_DIALECTS) {
+    try {
+      const ast = sqlParser.astify(sql, { database: dialect });
+      if (Array.isArray(ast)) return ast;
+      if (ast) return [ast];
+    } catch (_) {
+      // try next dialect
+    }
+  }
+  return null;
+}
+
+interface EntityAccumulator {
+  name: string;
+  kind: EntityKind;
+  columns: Map<string, Column>;
+  comment?: string;
+  iconHint?: IconHint;
+  palette?: PaletteName;
+  columnComments: Map<string, string>;
+}
+
+class AstSchemaBuilder {
+  private entities = new Map<string, EntityAccumulator>();
+  private relationships: Relationship[] = [];
+  private relationshipIds = new Set<string>();
+
+  applyStatement(stmt: SqlStatement) {
+    if (!stmt || typeof stmt !== 'object') return;
+    const type = (stmt.type || '').toString().toLowerCase();
+    if (type !== 'create' && type !== 'alter') return;
+    const keyword = (stmt.keyword || '').toString().toLowerCase();
+    if (type === 'create' && keyword === 'table') {
+      this.applyCreateTable(stmt);
+    } else if (type === 'create' && keyword === 'view') {
+      this.applyCreateView(stmt);
+    } else if (type === 'alter') {
+      this.applyAlterTable(stmt);
+    }
+  }
+
+  applyCommentStatements(sql: string) {
+    const regex = /comment\s+on\s+(table|column)\s+(.+?)\s+is\s+'((?:''|[^'])*)'/gim;
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(sql))) {
+      const target = match[1].toLowerCase();
+      const identifier = match[2].replace(/["`]/g, '').replace(/\[/g, '').replace(/\]/g, '').trim();
+      const comment = match[3].replace(/''/g, "'");
+      if (target === 'table') {
+        const tableName = normalizeIdentifier(identifier);
+        if (!tableName) continue;
+        const entity = this.ensureEntity(tableName);
+        entity.comment = comment;
+      } else {
+        const parts = identifier.split('.');
+        if (parts.length < 2) continue;
+        const columnName = normalizeIdentifier(parts.pop());
+        const tableName = normalizeIdentifier(parts.pop());
+        if (!tableName || !columnName) continue;
+        const entity = this.ensureEntity(tableName);
+        const existing = entity.columns.get(columnName);
+        if (existing) {
+          existing.comment = comment;
+          entity.columns.set(columnName, existing);
+        } else {
+          entity.columnComments.set(columnName, comment);
+        }
+      }
+    }
+  }
+
+  build(): SchemaModel {
+    const entities: Entity[] = [];
+    for (const entry of this.entities.values()) {
+      const columns: Column[] = [];
+      for (const column of entry.columns.values()) {
+        if (!column.comment && entry.columnComments.has(column.name)) {
+          column.comment = entry.columnComments.get(column.name);
+        }
+        columns.push({ ...column });
+      }
+      const entity: Entity = {
+        id: entry.name,
+        name: entry.name,
+        columns,
+        kind: entry.kind,
+        comment: entry.comment,
+        iconHint: entry.iconHint ?? deriveIconHint(entry.name),
+        palette: entry.palette ?? derivePalette(entry.name),
+      };
+      entities.push(entity);
+    }
+    return { entities, relationships: this.relationships };
+  }
+
+  private applyCreateTable(stmt: any) {
+    const tableRef = Array.isArray(stmt.table) ? stmt.table[0] : stmt.table;
+    const name = normalizeIdentifier(tableRef?.table || tableRef?.name);
+    if (!name) return;
+    const entity = this.ensureEntity(name, 'table');
+    if (!Array.isArray(stmt.create_definitions)) return;
+    for (const def of stmt.create_definitions) {
+      if (!def || typeof def !== 'object') continue;
+      if (def.resource === 'column') {
+        this.applyColumnDefinition(entity, def);
+      } else if (def.resource === 'constraint' || def.constraint_type) {
+        this.applyConstraintDefinition(entity, name, def);
+      }
+    }
+  }
+
+  private applyCreateView(stmt: any) {
+    const viewRef = stmt.view || (Array.isArray(stmt.table) ? stmt.table[0] : stmt.table);
+    const name = normalizeIdentifier(viewRef?.view || viewRef?.table || viewRef?.name);
+    if (!name) return;
+    const entity = this.ensureEntity(name, 'view');
+    entity.kind = 'view';
+    const columnsSource = stmt.columns || stmt.select?.columns || [];
+    columnsSource.forEach((column: any, index: number) => {
+      const colName =
+        normalizeIdentifier(column?.as) ||
+        normalizeIdentifier(column?.expr?.column) ||
+        `expr_${index + 1}`;
+      if (!colName) return;
+      const col: Column = entity.columns.get(colName) || { name: colName };
+      col.type = col.type || buildColumnType(column?.expr);
+      entity.columns.set(colName, col);
+    });
+  }
+
+  private applyAlterTable(stmt: any) {
+    const tableRef = Array.isArray(stmt.table) ? stmt.table[0] : stmt.table;
+    const name = normalizeIdentifier(tableRef?.table || tableRef?.name);
+    if (!name) return;
+    const entity = this.ensureEntity(name, 'table');
+    if (!Array.isArray(stmt.expr)) return;
+    for (const expr of stmt.expr) {
+      if (!expr || typeof expr !== 'object') continue;
+      if (expr.resource === 'column' && (expr.column || expr.definition)) {
+        this.applyColumnDefinition(entity, expr);
+      } else if (expr.resource === 'constraint' && expr.create_definitions) {
+        this.applyConstraintDefinition(entity, name, expr.create_definitions);
+      } else if (expr.create_definitions) {
+        this.applyConstraintDefinition(entity, name, expr.create_definitions);
+      }
+    }
+  }
+
+  private applyColumnDefinition(entity: EntityAccumulator, def: any) {
+    const colName = normalizeIdentifier(def?.column?.column || def?.column);
+    if (!colName) return;
+    const column: Column = entity.columns.get(colName) || { name: colName };
+    column.type = column.type || buildColumnType(def?.definition);
+    if (def?.nullable) {
+      column.nullable = def.nullable.value !== 'not null';
+    }
+    if (def?.primary_key) column.primary = true;
+    if (def?.unique) column.unique = true;
+    if (def?.reference_definition) {
+      column.foreign = true;
+      this.addReferenceRelationship(entity.name, colName, def.reference_definition);
+    }
+    entity.columns.set(colName, column);
+  }
+
+  private applyConstraintDefinition(entity: EntityAccumulator, tableName: string, constraint: any) {
+    const type = (constraint?.constraint_type || constraint?.type || '').toString().toLowerCase();
+    if (!type) return;
+    if (type.includes('primary')) {
+      const cols = Array.isArray(constraint.definition) ? constraint.definition : [];
+      cols.forEach((colRef: any) => {
+        const colName = normalizeIdentifier(colRef?.column);
+        if (!colName) return;
+        const column = entity.columns.get(colName) || { name: colName };
+        column.primary = true;
+        entity.columns.set(colName, column);
+      });
+    }
+    if (type.includes('foreign') || constraint.reference_definition) {
+      this.addTableConstraintRelationship(tableName, entity, constraint);
+    }
+  }
+
+  private addTableConstraintRelationship(tableName: string, entity: EntityAccumulator, constraint: any) {
+    const fromCols: Array<string | undefined> = Array.isArray(constraint.definition)
+      ? constraint.definition.map((col: any) => normalizeIdentifier(col?.column))
+      : [];
+    const reference = constraint.reference_definition;
+    if (!reference) return;
+    const toTableRef = Array.isArray(reference.table) ? reference.table[0] : reference.table;
+    const toTable = normalizeIdentifier(toTableRef?.table || toTableRef?.name);
+    const toCols: Array<string | undefined> = Array.isArray(reference.definition)
+      ? reference.definition.map((col: any) => normalizeIdentifier(col?.column))
+      : [];
+    if (!toTable) return;
+    fromCols.forEach((from: string | undefined, idx: number) => {
+      const to = toCols[idx] || toCols[0];
+      if (!from || !to) return;
+      const column: Column = entity.columns.get(from) ?? { name: from };
+      column.foreign = true;
+      entity.columns.set(from, column);
+      this.addRelationship(from, to, tableName, toTable, reference);
+    });
+  }
+
+  private addReferenceRelationship(tableName: string, columnName: string, reference: any) {
+    const toTableRef = Array.isArray(reference.table) ? reference.table[0] : reference.table;
+    const toTable = normalizeIdentifier(toTableRef?.table || toTableRef?.name);
+    const toColumnRef = Array.isArray(reference.definition) ? reference.definition[0] : reference.definition;
+    const toColumn = normalizeIdentifier(toColumnRef?.column);
+    if (!toTable || !toColumn) return;
+    this.addRelationship(columnName, toColumn, tableName, toTable, reference);
+  }
+
+  private addRelationship(
+    fromColumn: string,
+    toColumn: string,
+    fromTable: string,
+    toTable: string,
+    reference?: any,
+  ) {
+    const id = `${fromTable}.${fromColumn}->${toTable}.${toColumn}`;
+    if (this.relationshipIds.has(id)) return;
+    this.relationshipIds.add(id);
+    const actions = extractReferentialActions(reference?.on_action);
+    this.relationships.push({
+      id,
+      from: { entity: fromTable, column: fromColumn },
+      to: { entity: toTable, column: toColumn },
+      cardinality: 'many-to-one',
+      onDelete: actions.onDelete,
+      onUpdate: actions.onUpdate,
+    });
+  }
+
+  private ensureEntity(name: string, kind: EntityKind = 'table'): EntityAccumulator {
+    const existing = this.entities.get(name);
+    if (existing) {
+      existing.kind = existing.kind || kind;
+      return existing;
+    }
+    const acc: EntityAccumulator = {
+      name,
+      kind,
+      columns: new Map(),
+      iconHint: deriveIconHint(name),
+      palette: derivePalette(name),
+      columnComments: new Map(),
+    };
+    this.entities.set(name, acc);
+    return acc;
+  }
+}
+
+const PERSON_ENTITY_HINTS = ['user', 'users', 'employee', 'employees', 'student', 'students', 'person', 'people', 'patient', 'patients', 'guardian', 'guardians', 'profile'];
+const PALETTE_SEQUENCE: PaletteName[] = ['blue', 'green', 'purple', 'red', 'yellow'];
+
+function deriveIconHint(name?: string): IconHint | undefined {
+  if (!name) return undefined;
+  const lower = name.toLowerCase();
+  return PERSON_ENTITY_HINTS.some(alias => lower.includes(alias)) ? 'person' : undefined;
+}
+
+function derivePalette(name?: string): PaletteName {
+  if (!name) return 'blue';
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash << 5) - hash + name.charCodeAt(i);
+    hash |= 0;
+  }
+  const index = Math.abs(hash) % PALETTE_SEQUENCE.length;
+  return PALETTE_SEQUENCE[index];
+}
+
+function normalizeIdentifier(value?: string | null): string {
+  if (!value) return '';
+  const sanitized = value.replace(/["'`]/g, '').replace(/\[/g, '').replace(/\]/g, '');
+  const parts = sanitized.split('.');
+  return parts[parts.length - 1]?.trim() || '';
+}
+
+function buildColumnType(def?: any): string | undefined {
+  if (!def) return undefined;
+  if (def.dataType) {
+    const base = def.dataType.toString();
+    if (typeof def.length === 'number') {
+      return `${base}(${def.length})`;
+    }
+    if (Array.isArray(def.args) && def.args.length) {
+      const args = def.args.map((arg: any) => arg.value ?? arg).join(', ');
+      return `${base}(${args})`;
+    }
+    return base;
+  }
+  if (def.type) return def.type.toString();
+  return undefined;
+}
+
+function extractReferentialActions(actions?: any[]): { onDelete?: string; onUpdate?: string } {
+  const result: { onDelete?: string; onUpdate?: string } = {};
+  if (!Array.isArray(actions)) return result;
+  for (const action of actions) {
+    if (!action || typeof action !== 'object') continue;
+    const type = (action.type || '').toString().toLowerCase();
+    if (type.includes('delete')) result.onDelete = action.value;
+    if (type.includes('update')) result.onUpdate = action.value;
+  }
+  return result;
 }
 
 // Heuristic normalizer: map alternate ERD JSON shapes into the canonical schema shape
 function normalizeAlternateJsonShape(obj: any) {
   if (!obj || !Array.isArray(obj.entities)) return null;
   const norm: any = { entities: [], relationships: [] };
-
-  function getPrimaryFromEntity(e: any) {
-    if (!e) return undefined;
-    if (e.primaryKey) return e.primaryKey;
-    // if columns array with primary flag exists, return that
-    if (Array.isArray(e.columns)) {
-      const pk = e.columns.find((c: any) => c.primary || c.primary === true);
-      if (pk) return pk.name;
+  const entityLookup = new Map<
+    string,
+    {
+      original: any;
+      columns: any[];
+      primary?: string;
     }
-    // fallback to first attribute/column
-    if (Array.isArray(e.attributes) && e.attributes.length) return e.attributes[0];
-    if (Array.isArray(e.columns) && e.columns.length) return e.columns[0].name;
-    return undefined;
-  }
+  >();
 
-  // first pass: convert entities and attributes -> columns
-  for (const e of obj.entities) {
-    const cols: any[] = [];
-    if (Array.isArray(e.columns)) {
-      for (const c of e.columns) cols.push({ name: c.name, type: c.type, primary: !!c.primary, unique: !!c.unique, nullable: !!c.nullable });
-    }
-    if (Array.isArray(e.attributes)) {
-      for (const a of e.attributes) {
-        // avoid duplicates
-        if (!cols.find(c => c.name === a)) cols.push({ name: a });
+  for (const entity of obj.entities) {
+    if (!entity || !entity.name) continue;
+    const columns: any[] = [];
+    const seen = new Set<string>();
+    if (Array.isArray(entity.columns)) {
+      for (const col of entity.columns) {
+        const name = col?.name || col;
+        if (!name || seen.has(name)) continue;
+        seen.add(name);
+        columns.push({ name, type: col?.type, primary: !!col?.primary });
       }
     }
-    const pk = getPrimaryFromEntity(e);
-    if (pk && !cols.find(c => c.name === pk)) cols.unshift({ name: pk, primary: true });
-    else if (pk) {
-      const c = cols.find(cc => cc.name === pk); if (c) c.primary = true;
-    }
-    norm.entities.push({ name: e.name, columns: cols });
-  }
-
-  // helper to lookup entity by name from original array
-  function findOrigEntity(name: string) {
-    return obj.entities.find((x: any) => x.name === name);
-  }
-
-  // helper to find column in an entity (by heuristics)
-  function findViaColumn(viaEntity: any, term: string) {
-    if (!viaEntity) return undefined;
-    const cols = Array.isArray(viaEntity.columns) ? viaEntity.columns.map((c: any) => c.name) : (Array.isArray(viaEntity.attributes) ? viaEntity.attributes : []);
-    if (!cols) return undefined;
-    // try exact match against term + 'id' or term + 'Id' variants
-    const variants = [term + 'ID', term + 'Id', term + 'id', term];
-    for (const v of variants) {
-      const found = cols.find((c: string) => c.toLowerCase() === v.toLowerCase());
-      if (found) return found;
-    }
-    // fallback: find any column that contains the term
-    const fuzzy = cols.find((c: string) => c.toLowerCase().includes(term.toLowerCase()));
-    return fuzzy;
-  }
-
-  // second pass: convert nested relationships into top-level relationships
-  for (const e of obj.entities) {
-    if (!Array.isArray(e.relationships)) continue;
-    for (const r of e.relationships) {
-      if (r.target && r.foreignKey) {
-        norm.relationships.push({ from: `${e.name}.${r.foreignKey}`, to: `${r.target}.${r.foreignKey}`, cardinality: r.cardinality });
-        continue;
-      }
-      // handle many-to-many via join table
-      if (r.type && typeof r.type === 'string' && r.type.toLowerCase().includes('many') && r.via) {
-        const via = r.via;
-        const viaEntity = findOrigEntity(via);
-        const targetEntity = findOrigEntity(r.target);
-        const sourcePk = getPrimaryFromEntity(e) || (Array.isArray(e.attributes) ? e.attributes[0] : undefined);
-        const targetPk = getPrimaryFromEntity(targetEntity) || (Array.isArray(targetEntity && targetEntity.attributes) ? targetEntity.attributes[0] : undefined);
-        const viaColForSource = viaEntity ? findViaColumn(viaEntity, e.name) : undefined;
-        const viaColForTarget = viaEntity ? findViaColumn(viaEntity, r.target) : undefined;
-        if (viaEntity && viaColForSource && sourcePk) {
-          norm.relationships.push({ from: `${e.name}.${sourcePk}`, to: `${via}.${viaColForSource}`, cardinality: r.cardinality });
-        }
-        if (viaEntity && viaColForTarget && targetPk) {
-          norm.relationships.push({ from: `${r.target}.${targetPk}`, to: `${via}.${viaColForTarget}`, cardinality: r.cardinality });
-        }
+    if (Array.isArray(entity.attributes)) {
+      for (const attr of entity.attributes) {
+        if (!attr || seen.has(attr)) continue;
+        seen.add(attr);
+        columns.push({ name: attr });
       }
     }
+    const primary = entity.primaryKey || columns.find(col => col.primary)?.name;
+    if (primary) {
+      const pk = columns.find(col => col.name === primary);
+      if (pk) pk.primary = true;
+      else columns.unshift({ name: primary, primary: true });
+    }
+    const entry = { name: entity.name, columns };
+    norm.entities.push(entry);
+    entityLookup.set(entity.name, { original: entity, columns, primary });
   }
 
-  // If no relationships were added but there is a top-level relationships array in original, include them
-  if (Array.isArray(obj.relationships) && obj.relationships.length) {
-    for (const r of obj.relationships) {
-      norm.relationships.push(r);
+  for (const entity of obj.entities) {
+    if (!Array.isArray(entity.relationships)) continue;
+    for (const rel of entity.relationships) {
+      pushNormalizedRelationship(entity, rel, entityLookup, norm.relationships);
+    }
+  }
+
+  if (Array.isArray(obj.relationships)) {
+    for (const rel of obj.relationships) {
+      norm.relationships.push(rel);
     }
   }
 
   return norm;
+}
+
+function pushNormalizedRelationship(
+  source: any,
+  rel: any,
+  entityLookup: Map<string, { original: any; columns: any[]; primary?: string }>,
+  target: any[],
+) {
+  if (!rel || !rel.target) return;
+  const type = (rel.type || '').toString().toLowerCase();
+  const cardinality = rel.cardinality || deriveCardinalityFromType(type);
+  const targetInfo = entityLookup.get(rel.target);
+  const viaInfo = rel.via ? entityLookup.get(rel.via) : undefined;
+  const sourceInfo = entityLookup.get(source.name);
+  if (!sourceInfo) return;
+
+  if (type.includes('manytomany') && viaInfo) {
+    const sourcePk = sourceInfo.primary || sourceInfo.columns[0]?.name;
+    const targetPk = targetInfo?.primary || targetInfo?.columns[0]?.name;
+    const viaSourceCol = findMatchingColumn(viaInfo, rel.viaSourceKey || source.name);
+    const viaTargetCol = findMatchingColumn(viaInfo, rel.viaTargetKey || rel.target);
+    if (viaSourceCol && sourcePk) {
+      target.push({ from: `${source.name}.${sourcePk}`, to: `${rel.via}.${viaSourceCol}`, cardinality });
+    }
+    if (viaTargetCol && targetPk) {
+      target.push({ from: `${rel.target}.${targetPk}`, to: `${rel.via}.${viaTargetCol}`, cardinality });
+    }
+    return;
+  }
+
+  if (type.includes('manytoone')) {
+    const fromColumn = rel.foreignKey || findMatchingColumn(sourceInfo, rel.target) || sourceInfo.primary;
+    const toColumn = targetInfo?.primary || rel.targetKey || rel.foreignKey;
+    if (fromColumn && toColumn) {
+      target.push({ from: `${source.name}.${fromColumn}`, to: `${rel.target}.${toColumn}`, cardinality });
+    }
+    return;
+  }
+
+  const targetColumn =
+    (rel.foreignKey && findMatchingColumn(targetInfo, rel.foreignKey)) ||
+    (targetInfo && findMatchingColumn(targetInfo, source.name)) ||
+    rel.foreignKey;
+  const sourcePk = sourceInfo.primary || sourceInfo.columns[0]?.name;
+  if (targetColumn && sourcePk) {
+    target.push({ from: `${rel.target}.${targetColumn}`, to: `${source.name}.${sourcePk}`, cardinality });
+  }
+}
+
+function findMatchingColumn(info: { columns: any[] } | undefined, term: string) {
+  if (!info || !term) return undefined;
+  const lower = term.toLowerCase();
+  return info.columns.find(col => col.name && col.name.toLowerCase() === lower)?.name
+    || info.columns.find(col => col.name && col.name.toLowerCase() === `${lower}id`)?.name
+    || info.columns.find(col => col.name && col.name.toLowerCase().includes(lower))?.name;
+}
+
+function deriveCardinalityFromType(type: string) {
+  if (type.includes('one') && type.includes('many')) return '1..*';
+  if (type.includes('many') && type.includes('one')) return '*..1';
+  if (type.includes('many') && type.includes('many')) return '*..*';
+  if (type.includes('one') && type.includes('one')) return '1..1';
+  return 'many-to-one';
 }
 
 function fromJsonShape(obj: z.infer<typeof SchemaShape>): SchemaModel {
@@ -157,8 +529,26 @@ function fromJsonShape(obj: z.infer<typeof SchemaShape>): SchemaModel {
   if (Array.isArray(obj.entities)) {
     for (const e of obj.entities) {
       const cols: Column[] = [];
-      for (const c of (e.columns || [])) cols.push({ name: c.name, type: c.type, primary: !!c.primary, unique: !!c.unique, nullable: !!c.nullable });
-      entities.push({ id: e.name, name: e.name, columns: cols });
+      for (const c of e.columns || []) {
+        cols.push({
+          name: c.name,
+          type: c.type,
+          primary: !!c.primary,
+          unique: !!c.unique,
+          nullable: !!c.nullable,
+          comment: c.comment,
+        });
+      }
+      entities.push({
+        id: e.name,
+        name: e.name,
+        columns: cols,
+        kind: e.kind as EntityKind | undefined,
+        comment: e.comment,
+        iconHint: e.iconHint as IconHint | undefined,
+        palette: (e.palette as PaletteName | undefined) || (e.name ? derivePalette(e.name) : undefined),
+        layout: e.layout ? { ...e.layout } : undefined,
+      });
     }
   }
   if (Array.isArray(obj.relationships)) {
@@ -171,7 +561,7 @@ function fromJsonShape(obj: z.infer<typeof SchemaShape>): SchemaModel {
   return { entities, relationships };
 }
 
-function parseSql(sql: string): SchemaModel {
+function legacyParseSql(sql: string): SchemaModel {
   const entities: Entity[] = [];
   const relationships: Relationship[] = [];
   const normalized = sql.replace(/\r\n/g, '\n');

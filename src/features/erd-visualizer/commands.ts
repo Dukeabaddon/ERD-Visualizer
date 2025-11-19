@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { parseSchemaFromText } from './parser';
 import { getWebviewContent } from './webview';
+import { computeAutoLayout } from './layout';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -56,6 +57,7 @@ export function registerCommands(context: vscode.ExtensionContext): vscode.Dispo
 
 async function openVisualizerPanel(context: vscode.ExtensionContext, text: string, sourceUri?: vscode.Uri) {
   const model = parseSchemaFromText(text);
+  const autoLayout = computeAutoLayout(model);
   const panel = vscode.window.createWebviewPanel('erdVisualizer', 'ERD Visualizer', vscode.ViewColumn.Beside, {
     enableScripts: true,
     retainContextWhenHidden: true,
@@ -85,7 +87,19 @@ async function openVisualizerPanel(context: vscode.ExtensionContext, text: strin
     // ignore
   }
 
-  panel.webview.html = getWebviewContent(panel.webview, context.extensionUri, model, visualSpec);
+  let savedLayout: any = undefined;
+  let layoutKey: string | undefined;
+  if (sourceUri) {
+    layoutKey = 'erd.layout:' + sourceUri.toString();
+    try {
+      savedLayout = context.workspaceState.get(layoutKey);
+    } catch (e) {
+      savedLayout = undefined;
+    }
+  }
+
+  const themePreference = context.workspaceState.get<string>('erd.themePreference', 'system');
+  panel.webview.html = getWebviewContent(panel.webview, context.extensionUri, model, visualSpec, savedLayout, autoLayout, themePreference);
 
   // handle messages from webview
   panel.webview.onDidReceiveMessage(async (msg: any) => {
@@ -110,9 +124,15 @@ async function openVisualizerPanel(context: vscode.ExtensionContext, text: strin
     } else if (msg.command === 'saveLayout') {
       try {
         if (sourceUri) {
-          const key = 'erd.layout:' + sourceUri.toString();
+          const key = layoutKey || ('erd.layout:' + sourceUri.toString());
           await context.workspaceState.update(key, msg.layout);
         }
+      } catch (e) {
+        // ignore
+      }
+    } else if (msg.command === 'saveTheme') {
+      try {
+        await context.workspaceState.update('erd.themePreference', msg.theme);
       } catch (e) {
         // ignore
       }
