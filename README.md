@@ -4,7 +4,7 @@
 
 [![Install in VS Code](https://img.shields.io/badge/VS%20Code-Install%20Extension-007ACC?logo=visualstudiocode&logoColor=white)](vscode:extension/dukeabaddon.erd-visualizer)
 [![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](#release-notes)
-[![Build Status](https://img.shields.io/badge/tests-pending-gray.svg)](#support--feedback)
+[![Build Status](https://github.com/Dukeabaddon/ERD-Visualizer/actions/workflows/ci.yml/badge.svg)](https://github.com/Dukeabaddon/ERD-Visualizer/actions/workflows/ci.yml)
 
 ![Workflow demo](./demo.gif)
 

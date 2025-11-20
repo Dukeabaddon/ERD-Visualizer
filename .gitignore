@@ -2,7 +2,6 @@ node_modules/
 out/
 test/
 /openspec/
-.github/
 .augment/
 AGENTS.md
 .cursor/
