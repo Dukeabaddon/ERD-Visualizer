@@ -2,7 +2,7 @@
 
 > Parse SQL + JSON schemas and design ERDs without leaving the editor.
 
-[![Install in VS Code](https://img.shields.io/badge/VS%20Code-Install%20Extension-007ACC?logo=visualstudiocode&logoColor=white)](vscode:extension/dukeabaddon.erd-visualizer)
+[![Install in VS Code](https://img.shields.io/badge/VS%20Code-Install%20Extension-007ACC?logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=dukeabaddon.erd-visualizer)
 [![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](#release-notes)
 [![Build Status](https://github.com/Dukeabaddon/ERD-Visualizer/actions/workflows/ci.yml/badge.svg)](https://github.com/Dukeabaddon/ERD-Visualizer/actions/workflows/ci.yml)
 
