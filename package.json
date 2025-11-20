@@ -29,7 +29,7 @@
   "homepage": "https://github.com/Dukeabaddon/ERD-Visualizer#readme",
   "license": "MIT",
   "engines": {
-    "vscode": "^1.60.0"
+    "vscode": "^1.106.0"
   },
   "dependencies": {
     "@fission-ai/openspec": "^0.14.0",
@@ -74,11 +74,12 @@
     "onCommand:erdVisualizer.openFromFile"
   ],
   "devDependencies": {
+    "@jest/test-sequencer": "^29.7.0",
     "@types/dagre": "^0.7.48",
     "@types/jest": "^29.5.3",
     "@types/node": "^24.10.1",
     "@types/vscode": "^1.106.0",
-    "@jest/test-sequencer": "^29.7.0",
+    "@vscode/vsce": "^3.7.0",
     "jest": "^29.6.0",
     "ts-jest": "^29.1.0",
     "typescript": "^5.9.3"
