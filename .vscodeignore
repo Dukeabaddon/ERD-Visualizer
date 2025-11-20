@@ -1,0 +1,15 @@
+src/**
+test/**
+scripts/**
+openspec/**
+images/reference/**
+.github/**
+.vscode/**
+tsconfig.json
+jest.config.cjs
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
+.DS_Store
+*.code-workspace
+

@@ -27,7 +27,7 @@ export function getWebviewContent(
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: https:; font-src data:; script-src 'nonce-${nonce}'; style-src 'unsafe-inline';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data: https: blob:; font-src ${webview.cspSource} data:; script-src 'nonce-${nonce}' ${webview.cspSource}; style-src 'unsafe-inline' ${webview.cspSource}; connect-src ${webview.cspSource} https: blob: data:;">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ERD Visualizer</title>
   <style>
@@ -402,7 +402,7 @@ export function getWebviewContent(
       const MAX_BUS_RUN = 320;
       const DEFAULT_VERTICAL_LEG = 40;
       const MAX_VERTICAL_LEG = 160;
-      const PINCH_SENSITIVITY = 0.0012;
+      const PINCH_SENSITIVITY = 0.0016;
       const KEYBOARD_ZOOM_STEP = 0.08;
       const MIN_ZOOM = 0.12;
       const MAX_ZOOM = 3.5;
@@ -421,6 +421,7 @@ export function getWebviewContent(
       let hoverGroupId = null;
       let currentThemeStyles = getThemeStyles(document.body.dataset.theme || 'dark');
       let focusOverlaySuppressed = false;
+      let activeTheme = document.body.dataset.theme || 'dark';
 
       let layoutMap = Object.keys(savedLayout).length ? savedLayout : (state.layout ? normalizeLayout(state.layout) : {});
       const positions = {};
@@ -443,19 +444,15 @@ export function getWebviewContent(
         slotOffsetCache.clear();
         Object.keys(entityMetrics).forEach(function (key) { delete entityMetrics[key]; });
         model.entities.forEach(function (entity, index) {
-          const palette = getPalette(entity.palette);
           const card = document.createElement('div');
           card.className = 'entity-card';
           card.dataset.entity = entity.name;
+          card.dataset.paletteKey = entity.palette || 'blue';
           card.dataset.focusRole = 'none';
           card.tabIndex = 0;
           card.setAttribute('role', 'button');
           card.setAttribute('aria-pressed', 'false');
-          card.style.setProperty('--entity-border', palette.border);
-          card.style.setProperty('--entity-body', palette.body);
-          card.style.setProperty('--entity-header', palette.header);
-          card.style.setProperty('--entity-name-bg', palette.nameBg);
-          card.style.setProperty('--entity-type-bg', palette.typeBg);
+          applyCardPalette(card, activeTheme);
 
           const header = document.createElement('div');
           header.className = 'entity-header';
@@ -526,6 +523,25 @@ export function getWebviewContent(
         highlightSelection();
         applyFocusState();
         applyKeyboardPreviewState();
+      }
+
+      function applyCardPalette(card, theme) {
+        if (!card) return;
+        const paletteKey = card.dataset.paletteKey || 'blue';
+        const palette = getPalette(paletteKey);
+        if (!palette) return;
+        const tone = (theme === 'light' ? palette.light : palette.dark) || palette.dark;
+        if (!tone) return;
+        card.style.setProperty('--entity-border', tone.border);
+        card.style.setProperty('--entity-body', tone.body);
+        card.style.setProperty('--entity-header', tone.header);
+        card.style.setProperty('--entity-name-bg', tone.nameBg);
+        card.style.setProperty('--entity-type-bg', tone.typeBg);
+      }
+
+      function refreshCardPalettes(theme) {
+        const cards = nodesLayer.querySelectorAll('.entity-card');
+        cards.forEach(function (card) { applyCardPalette(card, theme); });
       }
 
       function createFlagBadge(label) {
@@ -1404,6 +1420,8 @@ export function getWebviewContent(
       function applyTheme() {
         const theme = themePreference === 'system' ? inferVsCodeTheme() : themePreference;
         document.body.dataset.theme = theme;
+        activeTheme = theme;
+        refreshCardPalettes(theme);
         renderEdges();
       }
 
@@ -1461,7 +1479,10 @@ export function getWebviewContent(
 
       function exportImage(kind) {
         const htmlToImage = window.htmlToImage;
-        if (!htmlToImage) return;
+        if (!htmlToImage) {
+          warnWithId('Export skipped because html-to-image is unavailable', kind);
+          return;
+        }
         forceRenderEdges();
         const target = canvasEl.cloneNode(true);
         const viewportClone = target.querySelector('#viewport');
@@ -1476,15 +1497,15 @@ export function getWebviewContent(
         if (kind === 'png') {
           htmlToImage.toPng(target, { pixelRatio: scale, backgroundColor: background }).then(function (dataUrl) {
             downloadDataUrl(dataUrl, 'erd.png');
-          });
+          }).catch(function (error) { reportExportError('png', error); });
         } else if (kind === 'svg') {
           htmlToImage.toSvg(target, { pixelRatio: scale, backgroundColor: background }).then(function (dataUrl) {
             downloadDataUrl(dataUrl, 'erd.svg');
-          });
+          }).catch(function (error) { reportExportError('svg', error); });
         } else {
           htmlToImage.toPng(target, { pixelRatio: scale, backgroundColor: background }).then(async function (dataUrl) {
             const pdfLib = window.PDFLib;
-            if (!pdfLib) return;
+            if (!pdfLib) throw new Error('PDFLib unavailable');
             const pdfDoc = await pdfLib.PDFDocument.create();
             const page = pdfDoc.addPage();
             const pngBytes = await fetch(dataUrl).then(function (res) { return res.arrayBuffer(); });
@@ -1497,7 +1518,7 @@ export function getWebviewContent(
             const url = URL.createObjectURL(blob);
             downloadUrl(url, 'erd.pdf');
             URL.revokeObjectURL(url);
-          });
+          }).catch(function (error) { reportExportError('pdf', error); });
         }
       }
 
@@ -1513,6 +1534,10 @@ export function getWebviewContent(
         link.href = url;
         link.download = name;
         link.click();
+      }
+
+      function reportExportError(kind, error) {
+        console.error(CHANGE_ID + ' export ' + kind + ' failed', error);
       }
 
       function persistLayoutDebounced() {
@@ -1578,13 +1603,29 @@ export function getWebviewContent(
 
       function getPalette(name) {
         const palettes = {
-          blue: { border: '#4f9dff', body: '#071527f5', header: '#0f2744', nameBg: '#0b1f3a', typeBg: '#3ab0ff' },
-          green: { border: '#41e3c4', body: '#031a1cf0', header: '#06302d', nameBg: '#082521', typeBg: '#20f0c0' },
-          red: { border: '#ff6b81', body: '#1b0507f5', header: '#3b0a15', nameBg: '#2a0c12', typeBg: '#ff7d9b' },
-          purple: { border: '#b785ff', body: '#12061df5', header: '#2a0c45', nameBg: '#1e0f31', typeBg: '#d3a6ff' },
-          yellow: { border: '#f6c356', body: '#2a1b05f5', header: '#4a2c05', nameBg: '#3a2204', typeBg: '#ffd56c' },
+          blue: {
+            dark: { border: '#4f9dff', body: '#071527f5', header: '#0f2744', nameBg: '#0b1f3a', typeBg: '#3ab0ff' },
+            light: { border: '#6d8dff', body: '#f8faff', header: '#e7efff', nameBg: '#dfe7ff', typeBg: '#4f6bf9' },
+          },
+          green: {
+            dark: { border: '#41e3c4', body: '#031a1cf0', header: '#06302d', nameBg: '#082521', typeBg: '#20f0c0' },
+            light: { border: '#3fc9a8', body: '#f2fffb', header: '#daf9ef', nameBg: '#c6f2e4', typeBg: '#21a886' },
+          },
+          red: {
+            dark: { border: '#ff6b81', body: '#1b0507f5', header: '#3b0a15', nameBg: '#2a0c12', typeBg: '#ff7d9b' },
+            light: { border: '#ff8ea6', body: '#fff6f8', header: '#ffe1e7', nameBg: '#ffd0da', typeBg: '#d44d6a' },
+          },
+          purple: {
+            dark: { border: '#b785ff', body: '#12061df5', header: '#2a0c45', nameBg: '#1e0f31', typeBg: '#d3a6ff' },
+            light: { border: '#c79cff', body: '#fbf6ff', header: '#f0e6ff', nameBg: '#e3d5ff', typeBg: '#7c57d9' },
+          },
+          yellow: {
+            dark: { border: '#f6c356', body: '#2a1b05f5', header: '#4a2c05', nameBg: '#3a2204', typeBg: '#ffd56c' },
+            light: { border: '#f1b04b', body: '#fff8ed', header: '#ffefd7', nameBg: '#ffe0b2', typeBg: '#d28412' },
+          },
         };
-        return palettes[name] || palettes.blue;
+        const palette = palettes[name] || palettes.blue;
+        return palette;
       }
     })();
   </script>

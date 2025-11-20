@@ -1,7 +1,33 @@
 {
-  "name": "erd-visualizer-extension",
-  "version": "0.0.0",
+  "name": "erd-visualizer",
+  "displayName": "ERD Visualizer",
+  "publisher": "dukeabaddon",
+  "description": "Design, inspect, and export entity-relationship diagrams from SQL or JSON without leaving VS Code.",
+  "version": "0.1.0",
   "main": "./out/extension.js",
+  "icon": "icon.png",
+  "galleryBanner": {
+    "color": "#0f172a",
+    "theme": "dark"
+  },
+  "categories": [
+    "Visualization",
+    "Data Science"
+  ],
+  "keywords": [
+    "ERD",
+    "database",
+    "diagram"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Dukeabaddon/ERD-Visualizer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Dukeabaddon/ERD-Visualizer/issues"
+  },
+  "homepage": "https://github.com/Dukeabaddon/ERD-Visualizer#readme",
+  "license": "MIT",
   "engines": {
     "vscode": "^1.60.0"
   },
@@ -52,6 +78,7 @@
     "@types/jest": "^29.5.3",
     "@types/node": "^24.10.1",
     "@types/vscode": "^1.106.0",
+    "@jest/test-sequencer": "^29.7.0",
     "jest": "^29.6.0",
     "ts-jest": "^29.1.0",
     "typescript": "^5.9.3"
@@ -60,7 +87,8 @@
     "compile": "tsc -p tsconfig.json",
     "postcompile": "node ./scripts/copy-resources.js",
     "test:contrib": "node ./scripts/validate-editor-icon.js",
-    "test": "echo \"Tests live on the tests-suite branch\""
+    "test": "jest --runInBand",
+    "vscode:prepublish": "pnpm run compile"
   },
   "packageManager": "pnpm@10.22.0"
 }
