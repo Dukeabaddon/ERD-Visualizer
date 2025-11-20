@@ -5,6 +5,11 @@ openspec/**
 images/reference/**
 .github/**
 .vscode/**
+.augment/**
+.cursor/**
+.tmp/**
+.npmrc
+pnpm-workspace.yaml
 tsconfig.json
 jest.config.cjs
 pnpm-lock.yaml

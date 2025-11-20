@@ -34,15 +34,6 @@ See `openspec/changes/` for detailed proposals and upcoming iterations.
 
 ---
 
-## Roadmap
-
-- Relationship badges with join-table callouts (N:M).
-- Theme-aware styling presets (dark + light parity).
-- Performance mode for 100+ entity diagrams.
-- Explorer context menu + telemetry (opt-in) for usage insights.
-
----
-
 ## Support & Feedback
 
 - **Issues / Feature Requests**: [open an issue](https://github.com/Dukeabaddon/ERD-Visualizer/issues).
