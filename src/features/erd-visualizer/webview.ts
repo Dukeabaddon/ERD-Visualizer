@@ -40,8 +40,15 @@ export function getWebviewContent(
       --text-light: #111a2c;
       --muted-dark: #9fb4d7;
       --muted-light: #4d5a78;
-      --edge-dark: #8ca2c7;
-      --edge-light: #5c6f91;
+      --edge-stroke-dark: #8ca2c7;
+      --edge-stroke-light: #5c6f91;
+      --edge-highlight-dark: #a8e2ff;
+      --edge-highlight-light: #4d8dff;
+      --edge-anchor-dark: rgba(255,255,255,0.8);
+      --edge-anchor-light: rgba(8,19,32,0.7);
+      --focus-dim-opacity: 0.28;
+      --focus-shadow-dark: rgba(0,0,0,0.45);
+      --focus-shadow-light: rgba(8,19,32,0.3);
     }
     * { box-sizing: border-box; }
     body {
@@ -73,6 +80,18 @@ export function getWebviewContent(
         linear-gradient(90deg, transparent 23px, rgba(24,38,74,0.05) 24px);
     }
     #viewport { position: absolute; transform-origin: 0 0; }
+    #focusBackdrop {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: radial-gradient(circle at center, rgba(0,0,0,0.05), rgba(0,0,0,0.35));
+      opacity: 0;
+      transition: opacity 150ms ease;
+    }
+    body[data-theme='light'] #focusBackdrop {
+      background: radial-gradient(circle at center, rgba(8,19,32,0.05), rgba(8,19,32,0.25));
+    }
+    body.focus-mode #focusBackdrop { opacity: var(--focus-dim-opacity); }
     #edges { position: absolute; inset: 0; overflow: visible; pointer-events: visibleStroke; }
     #edgeLabels { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
     #nodes { position: absolute; inset: 0; }
@@ -91,10 +110,16 @@ export function getWebviewContent(
     body[data-theme='light'] .entity-card { box-shadow: 0 10px 24px rgba(10,24,48,0.15); }
     .entity-card:active { cursor: grabbing; }
     .entity-card.selected { box-shadow: 0 20px 48px rgba(49,155,255,0.35); }
+    .entity-card[data-focus-role="primary"] { box-shadow: 0 24px 64px rgba(121,198,255,0.55); z-index: 3; }
+    .entity-card[data-focus-role="neighbor"] { box-shadow: 0 18px 48px rgba(111,198,255,0.35); }
+    .entity-card[data-focus-role="dimmed"] { opacity: 0.28; filter: saturate(0.5); }
     .entity-card.edge-hover {
       box-shadow: 0 0 24px rgba(111,198,255,0.45);
       border-color: rgba(111,198,255,0.8);
+      opacity: 1 !important;
+      filter: none !important;
     }
+    .entity-card.keyboard-preview { box-shadow: 0 0 20px rgba(111,198,255,0.4); }
     .entity-header {
       display: flex;
       align-items: center;
@@ -235,6 +260,56 @@ export function getWebviewContent(
       stroke: rgba(5,5,5,0.35);
       stroke-width: 2px;
     }
+    .edge-label.label-hover,
+    .edge-label.label-focused {
+      fill: var(--edge-highlight-dark);
+      opacity: 1 !important;
+    }
+    body[data-theme='light'] .edge-label.label-hover,
+    body[data-theme='light'] .edge-label.label-focused {
+      fill: var(--edge-highlight-light);
+    }
+    .edge-label.label-dimmed { opacity: 0.25; }
+    .edge-pipe {
+      pointer-events: stroke;
+      transition: stroke 120ms ease, opacity 120ms ease, filter 140ms ease;
+    }
+    .edge-pipe.dimmed { opacity: 0.18; filter: none; }
+    .edge-pipe.focused { opacity: 1; filter: drop-shadow(0 0 9px rgba(159,230,255,0.38)); }
+    .edge-pipe.hover { filter: drop-shadow(0 0 10px rgba(159,230,255,0.45)); opacity: 1; }
+    .edge-pipe.edge-pipe-preview { opacity: 0.82; stroke-dasharray: 6 4; }
+    .anchor-dot {
+      transition: fill 120ms ease, opacity 120ms ease, stroke 120ms ease;
+      vector-effect: non-scaling-stroke;
+      stroke-width: 1.1;
+    }
+    .anchor-dot.dimmed { opacity: 0.2; }
+    .anchor-dot.focused,
+    .anchor-dot.hover { opacity: 1; }
+    body[data-theme='dark'] .anchor-dot.hover,
+    body[data-theme='dark'] .anchor-dot.focused {
+      fill: var(--edge-highlight-dark);
+      stroke: var(--edge-highlight-dark);
+    }
+    body[data-theme='light'] .anchor-dot.hover,
+    body[data-theme='light'] .anchor-dot.focused {
+      fill: var(--edge-highlight-light);
+      stroke: var(--edge-highlight-light);
+    }
+    .edge-warning {
+      font-size: 10px;
+      fill: #ff9d57;
+      font-weight: 600;
+      dominant-baseline: central;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .entity-card,
+      #focusBackdrop,
+      .edge-pipe,
+      .anchor-dot {
+        transition: none !important;
+      }
+    }
   </style>
 </head>
 <body>
@@ -250,7 +325,7 @@ export function getWebviewContent(
           <label class="radio-row"><input type="radio" name="theme" value="system" checked> System</label>
           <label class="radio-row"><input type="radio" name="theme" value="light"> Light</label>
           <label class="radio-row"><input type="radio" name="theme" value="dark"> Dark</label>
-        </div>
+    </div>
         <div class="settings-section">
           <div style="font-size:12px;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:8px;">Export</div>
           <div id="exportOptions">
@@ -265,7 +340,7 @@ export function getWebviewContent(
               <option value="2" selected>2x</option>
               <option value="3">3x</option>
             </select>
-          </div>
+  </div>
           <div style="display:flex;gap:8px;margin-top:10px;">
             <button class="menu-button primary" id="exportPng">PNG</button>
             <button class="menu-button" id="exportSvg">SVG</button>
@@ -278,6 +353,7 @@ export function getWebviewContent(
       </div>
     </div>
     <div id="canvas">
+      <div id="focusBackdrop"></div>
       <div id="viewport">
         <svg id="edges"></svg>
         <svg id="edgeLabels"></svg>
@@ -318,6 +394,33 @@ export function getWebviewContent(
       const exportScaleSelect = document.getElementById('exportScale');
       const themeInputs = Array.from(document.querySelectorAll('input[name="theme"]'));
       const canvasEl = document.getElementById('canvas');
+      const focusBackdrop = document.getElementById('focusBackdrop');
+      const DEFAULT_STUB_LENGTH = 16;
+      const MIN_STUB_LENGTH = 8;
+      const MIN_BUS_OFFSET = 28;
+      const MIN_BUS_RUN = 48;
+      const MAX_BUS_RUN = 320;
+      const DEFAULT_VERTICAL_LEG = 40;
+      const MAX_VERTICAL_LEG = 160;
+      const PINCH_SENSITIVITY = 0.0012;
+      const KEYBOARD_ZOOM_STEP = 0.08;
+      const MIN_ZOOM = 0.12;
+      const MAX_ZOOM = 3.5;
+      const ZOOM_RERENDER_DELAY = 90;
+      const MAX_LABEL_STACK = 6;
+      const LABEL_STACK_SPACING = 12;
+      const CHANGE_ID = '[update-erd-pipeline-connectors]';
+      const DEBUG_PIPES = typeof window !== 'undefined' && Boolean(window.DEBUG_PIPES);
+      const slotOffsetCache = new Map();
+      const edgeElements = new Map();
+      let relationshipGroups = [];
+      let groupIndexByEntity = new Map();
+      let focusEntity = null;
+      let focusNeighbors = new Set();
+      let keyboardPreviewEntity = null;
+      let hoverGroupId = null;
+      let currentThemeStyles = getThemeStyles(document.body.dataset.theme || 'dark');
+      let focusOverlaySuppressed = false;
 
       let layoutMap = Object.keys(savedLayout).length ? savedLayout : (state.layout ? normalizeLayout(state.layout) : {});
       const positions = {};
@@ -325,6 +428,7 @@ export function getWebviewContent(
       let selectedEntity = state.selectedEntity || null;
       let persistTimer = null;
       let zoomRenderTimeout = null;
+      let zoomRenderRaf = null;
 
       applyTheme();
       renderEntities();
@@ -332,15 +436,21 @@ export function getWebviewContent(
       attachEventHandlers();
       renderEdges();
       observeThemeChanges();
+      observeVisibilityChanges();
 
       function renderEntities() {
         nodesLayer.innerHTML = '';
+        slotOffsetCache.clear();
         Object.keys(entityMetrics).forEach(function (key) { delete entityMetrics[key]; });
         model.entities.forEach(function (entity, index) {
           const palette = getPalette(entity.palette);
           const card = document.createElement('div');
           card.className = 'entity-card';
           card.dataset.entity = entity.name;
+          card.dataset.focusRole = 'none';
+          card.tabIndex = 0;
+          card.setAttribute('role', 'button');
+          card.setAttribute('aria-pressed', 'false');
           card.style.setProperty('--entity-border', palette.border);
           card.style.setProperty('--entity-body', palette.body);
           card.style.setProperty('--entity-header', palette.header);
@@ -401,8 +511,21 @@ export function getWebviewContent(
           positions[entity.name] = layoutMap[entity.name] ? { ...layoutMap[entity.name] } : { ...fallback };
           updateNodePosition(entity.name);
           makeDraggable(card, entity.name);
+          card.addEventListener('focus', function () { handleCardFocus(entity.name); });
+          card.addEventListener('blur', function () { handleCardBlur(entity.name); });
+          card.addEventListener('keydown', function (event) {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              selectedEntity = entity.name;
+              toggleFocus(entity.name);
+              highlightSelection();
+              persistState();
+            }
+          });
         });
         highlightSelection();
+        applyFocusState();
+        applyKeyboardPreviewState();
       }
 
       function createFlagBadge(label) {
@@ -416,6 +539,93 @@ export function getWebviewContent(
         text.textContent = label;
         badge.appendChild(text);
         return badge;
+      }
+
+      function logDebug() {
+        if (!DEBUG_PIPES) return;
+        const args = Array.prototype.slice.call(arguments);
+        console.debug.apply(console, [CHANGE_ID].concat(args));
+      }
+
+      function warnWithId(message, payload) {
+        console.warn(CHANGE_ID + ' ' + message, payload || '');
+      }
+
+      function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+      }
+
+      function clampRange(value, min, max) {
+        if (min > max) return (min + max) / 2;
+        return Math.max(min, Math.min(max, value));
+      }
+
+      function normalizeEntityName(name) {
+        if (!name) return '';
+        return name.replace(/["'\u0060]/g, '').split('.').pop().trim().toLowerCase();
+      }
+
+      function buildEntityLookup(entities) {
+        const map = new Map();
+        entities.forEach(function (entity) {
+          const key = normalizeEntityName(entity.name);
+          if (key && !map.has(key)) {
+            map.set(key, entity.name);
+          }
+        });
+        return map;
+      }
+
+      function computeStubLength(deltaX) {
+        if (!deltaX || deltaX < 0) return DEFAULT_STUB_LENGTH;
+        if (deltaX < 80) {
+          return clamp(deltaX * 0.25, MIN_STUB_LENGTH, DEFAULT_STUB_LENGTH);
+        }
+        return DEFAULT_STUB_LENGTH;
+      }
+
+      function buildRoundedPathFromPoints(points, radius) {
+        const filtered = [];
+        points.forEach(function (pt) {
+          if (!filtered.length) {
+            filtered.push(pt);
+            return;
+          }
+          const last = filtered[filtered.length - 1];
+          if (Math.abs(last.x - pt.x) < 0.5 && Math.abs(last.y - pt.y) < 0.5) return;
+          filtered.push(pt);
+        });
+        if (!filtered.length) return '';
+        if (filtered.length === 1) return ['M', filtered[0].x, filtered[0].y].join(' ');
+        const path = ['M', filtered[0].x, filtered[0].y];
+        for (let i = 1; i < filtered.length; i++) {
+          const current = filtered[i];
+          const prev = filtered[i - 1];
+          const next = filtered[i + 1];
+          if (!next) {
+            path.push('L', current.x, current.y);
+            continue;
+          }
+          const vecA = { x: current.x - prev.x, y: current.y - prev.y };
+          const vecB = { x: next.x - current.x, y: next.y - current.y };
+          const lenA = Math.hypot(vecA.x, vecA.y);
+          const lenB = Math.hypot(vecB.x, vecB.y);
+          if (lenA === 0 || lenB === 0) continue;
+          const cut = Math.min(radius, lenA / 2, lenB / 2);
+          const startCorner = {
+            x: current.x - (vecA.x / lenA) * cut,
+            y: current.y - (vecA.y / lenA) * cut,
+          };
+          const endCorner = {
+            x: current.x + (vecB.x / lenB) * cut,
+            y: current.y + (vecB.y / lenB) * cut,
+          };
+          path.push('L', startCorner.x, startCorner.y);
+          path.push('Q', current.x, current.y, endCorner.x, endCorner.y);
+        }
+        const lastPoint = filtered[filtered.length - 1];
+        path.push('L', lastPoint.x, lastPoint.y);
+        return path.join(' ');
       }
 
       function getEntityRect(card) {
@@ -468,68 +678,241 @@ export function getWebviewContent(
 
       function computeSlots(meta, count, isOutgoing) {
         if (!count) return [];
-        const margin = 20;
-        const span = Math.max(meta.height - margin * 2, 40);
-        const compressed = span * 0.75;
-        const spacing = count === 1 ? 0 : Math.max(18, compressed / (count - 1));
-        const startY = meta.pos.y + margin + (span - compressed) / 2;
-        const anchors = [];
-        for (let i = 0; i < count; i++) {
-          anchors.push({
+        const offsets = getSlotOffsets(meta.height, count);
+        return offsets.map(function (offset) {
+          return {
             x: isOutgoing ? meta.pos.x + meta.width : meta.pos.x,
-            y: startY + spacing * i,
-          });
-        }
-        return anchors;
+            y: meta.pos.y + offset,
+          };
+        });
       }
 
-      function buildSmoothPath(start, end, variantOffset) {
+      function getSlotOffsets(height, count) {
+        const key = height + ':' + count;
+        if (slotOffsetCache.has(key)) return slotOffsetCache.get(key);
+        const headerReserve = clamp(height * 0.12, 32, 52);
+        const footerReserve = clamp(height * 0.08, 20, 40);
+        const usable = Math.max(height - headerReserve - footerReserve, 40);
+        const compressed = usable * 0.8;
+        const spacing = count === 1 ? 0 : Math.max(18, compressed / (count - 1));
+        const start = headerReserve + (usable - compressed) / 2;
+        const offsets = [];
+        for (let i = 0; i < count; i++) offsets.push(start + spacing * i);
+        slotOffsetCache.set(key, offsets);
+        return offsets;
+      }
+
+      function buildPipelinePath(start, end, options) {
+        if (options && options.selfLoop) {
+          return buildSelfLoopPath(start, options);
+        }
         const dir = end.x >= start.x ? 1 : -1;
-        const stub = 16 * dir;
-        const midX = (start.x + end.x) / 2;
-        const bendOffset = ((variantOffset % 6) - 3) * 8;
+        const absDeltaX = Math.max(1, Math.abs(end.x - start.x));
+        const stubLength = computeStubLength(absDeltaX);
+        const exitX = start.x + dir * stubLength;
+        const entryX = end.x - dir * stubLength;
+        const variant = ((options && options.variant) || 0) % 5 - 2;
+
+        const sumWidth = (options && options.sourceMeta ? options.sourceMeta.width : 0) + (options && options.targetMeta ? options.targetMeta.width : 0);
+        const guardBase = sumWidth ? Math.min(sumWidth * 0.04, 90) : MIN_BUS_OFFSET;
+        const guard = Math.max(MIN_BUS_OFFSET, guardBase);
+        const horizontalSpan = Math.max(8, Math.abs(entryX - exitX));
+        let desiredRun;
+        if (horizontalSpan < 120) desiredRun = Math.max(guard + 6, horizontalSpan * 0.45 + 12);
+        else desiredRun = horizontalSpan * 0.5 + 18;
+        desiredRun = clamp(desiredRun + variant * 4, guard + 6, MAX_BUS_RUN);
+
+        let busX = exitX + dir * desiredRun;
+        const lowerBound = dir > 0 ? exitX + dir * guard : entryX - dir * guard;
+        const upperBound = dir > 0 ? entryX - dir * guard : exitX + dir * guard;
+        if (dir > 0) busX = clamp(busX, lowerBound, upperBound);
+        else busX = clamp(busX, upperBound, lowerBound);
+
+        const deltaY = end.y - start.y;
+        const absDeltaY = Math.abs(deltaY);
+        const verticalDir = absDeltaY === 0 ? 1 : deltaY > 0 ? 1 : -1;
+        let verticalLeg;
+        if (absDeltaY < 24) verticalLeg = Math.max(6, absDeltaY * 0.45);
+        else verticalLeg = clamp(absDeltaY * 0.32, 18, MAX_VERTICAL_LEG);
+        let liftY = start.y + verticalDir * verticalLeg;
+        let dropY = end.y - verticalDir * verticalLeg;
+        if ((verticalDir > 0 && liftY > dropY) || (verticalDir < 0 && liftY < dropY)) {
+          const midpoint = (start.y + end.y) / 2;
+          const adjust = Math.min(Math.abs(midpoint - start.y), DEFAULT_VERTICAL_LEG);
+          liftY = start.y + verticalDir * adjust;
+          dropY = end.y - verticalDir * adjust;
+        }
+
+        const points = [
+          { x: start.x, y: start.y },
+          { x: exitX, y: start.y },
+          { x: exitX, y: liftY },
+          { x: busX, y: liftY },
+          { x: busX, y: dropY },
+          { x: entryX, y: dropY },
+          { x: entryX, y: end.y },
+          { x: end.x, y: end.y },
+        ];
+        const cornerRadius = clamp(Math.min(Math.abs(busX - exitX), Math.abs(liftY - start.y), Math.abs(dropY - liftY)) * 0.55 + 8, 8, 42);
+        return buildRoundedPathFromPoints(points, cornerRadius);
+      }
+
+      function buildSelfLoopPath(anchor, options) {
+        const dir = ((options && options.variant) || 0) % 2 === 0 ? 1 : -1;
+        const meta = options && options.sourceMeta;
+        const loopWidth = meta ? clamp(meta.width * 0.55, 60, 160) : 80;
+        const loopHeight = meta ? clamp(meta.height * 0.45, 48, 140) : 60;
+        const farX = anchor.x + dir * (loopWidth + DEFAULT_STUB_LENGTH);
+        const topY = anchor.y - loopHeight;
         return [
-          'M', start.x, start.y,
-          'L', start.x + stub, start.y,
-          'Q', start.x + stub + 24 * dir, start.y + bendOffset, midX, start.y + bendOffset,
-          'Q', midX - 24 * dir, end.y - bendOffset, end.x - stub, end.y,
-          'L', end.x, end.y
+          'M', anchor.x, anchor.y,
+          'L', anchor.x + dir * DEFAULT_STUB_LENGTH, anchor.y,
+          'L', farX - dir * 18, anchor.y,
+          'Q', farX, anchor.y, farX, anchor.y - 18,
+          'L', farX, topY,
+          'Q', farX, topY - 18, farX - dir * 18, topY - 18,
+          'L', anchor.x - dir * (loopWidth / 2), topY - 18,
+          'Q', anchor.x - dir * (loopWidth / 2) - dir * 18, topY - 18, anchor.x - dir * (loopWidth / 2) - dir * 18, topY,
+          'L', anchor.x - dir * (loopWidth / 2) - dir * 18, anchor.y - 18,
+          'L', anchor.x - dir * DEFAULT_STUB_LENGTH, anchor.y - 6,
+          'L', anchor.x, anchor.y
         ].join(' ');
       }
 
-      function createRelationshipGroups(relationships) {
+      function createAnchorDot(anchor, themeStyles) {
+        const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        dot.setAttribute('cx', String(anchor.x));
+        dot.setAttribute('cy', String(anchor.y));
+        dot.setAttribute('r', '3');
+        dot.setAttribute('fill', themeStyles.anchorFill);
+        dot.setAttribute('stroke', themeStyles.anchorStroke);
+        dot.setAttribute('stroke-width', '1');
+        dot.classList.add('anchor-dot');
+        edgesSvg.appendChild(dot);
+        return dot;
+      }
+
+      function renderCardinalityStack(group, startAnchor, endAnchor, themeStyles) {
+        const values = group.cardinalities || [];
+        let visibleIndex = 0;
+        let total = 0;
+        const sourceMeta = entityMetrics[group.from];
+        const compactSource = sourceMeta && sourceMeta.height < 140;
+        const outward = (compactSource ? 16 : 10) + (values.length > 4 ? 4 : 0);
+        const created = [];
+        values.forEach(function (value) {
+          if (!value) return;
+          total++;
+          if (visibleIndex < MAX_LABEL_STACK) {
+            const textNode = addRelationshipLabel(value, startAnchor, endAnchor, themeStyles, {
+              position: 'edge',
+              stackIndex: visibleIndex,
+              anchor: 'start',
+              outward,
+              meta: { from: group.from, to: group.to, relCount: group.indexes.length },
+            });
+            if (textNode) created.push(textNode);
+            visibleIndex++;
+          }
+        });
+        const hidden = total - visibleIndex;
+        if (hidden > 0) {
+          const extra = addRelationshipLabel('+' + hidden + ' more', startAnchor, endAnchor, themeStyles, {
+            position: 'edge',
+            stackIndex: visibleIndex,
+            muted: true,
+            anchor: 'start',
+            outward,
+            meta: { from: group.from, to: group.to, relCount: group.indexes.length },
+          });
+          if (extra) created.push(extra);
+          warnWithId('Cardinality stack truncated for ' + group.id, group);
+        }
+        if (total > 10) {
+          const warning = addRelationshipLabel('⚠', startAnchor, endAnchor, themeStyles, {
+            position: 'edge',
+            stackIndex: visibleIndex + 0.4,
+            anchor: 'start',
+            outward: outward + 6,
+            meta: { from: group.from, to: group.to, relCount: group.indexes.length, warning: true },
+          });
+          if (warning) created.push(warning);
+          warnWithId('Excessive cardinality labels (' + total + ') for ' + group.id, group);
+        }
+        return created;
+      }
+
+      function createRelationshipGroups(relationships, entities) {
         const map = new Map();
         const groups = [];
-        relationships.forEach(function (rel, index) {
-          const fromName = rel.from && rel.from.entity;
-          const toName = rel.to && rel.to.entity;
-          if (!fromName || !toName) return;
-          const key = fromName + '→' + toName;
+        const lookup = buildEntityLookup(entities || []);
+        (relationships || []).forEach(function (rel, index) {
+          const rawFrom = rel.from && rel.from.entity;
+          const rawTo = rel.to && rel.to.entity;
+          if (!rawFrom || !rawTo) return;
+          const fromKey = normalizeEntityName(rawFrom);
+          const toKey = normalizeEntityName(rawTo);
+          if (!fromKey || !toKey) return;
+          const resolvedFrom = lookup.get(fromKey) || rawFrom;
+          const resolvedTo = lookup.get(toKey) || rawTo;
+          const key = fromKey + '→' + toKey;
           let group = map.get(key);
           if (!group) {
-            group = { from: fromName, to: toName, indexes: [] };
+            group = {
+              id: key,
+              from: resolvedFrom,
+              to: resolvedTo,
+              canonicalFrom: fromKey,
+              canonicalTo: toKey,
+              indexes: [],
+              columns: [],
+              cardinalities: [],
+            };
             map.set(key, group);
             groups.push(group);
           }
           group.indexes.push(index);
+          group.columns.push(rel.from && rel.from.column ? rel.from.column : '');
+          group.cardinalities.push(rel.cardinality || '');
         });
         return groups;
       }
 
+      function buildGroupIndex(groups) {
+        const map = new Map();
+        groups.forEach(function (group, idx) {
+          const entries = [
+            { entity: group.from, index: idx },
+            { entity: group.to, index: idx },
+          ];
+          entries.forEach(function (entry) {
+            if (!entry.entity) return;
+            const bucket = map.get(entry.entity) || [];
+            bucket.push({ group, index: entry.index });
+            map.set(entry.entity, bucket);
+          });
+        });
+        return map;
+      }
+
       function addRelationshipLabel(label, start, end, themeStyles, options) {
-        const { cardinality, stackIndex = 0, stackCount = 1 } = options || {};
-        const isCardinality = /(\.\.|[*])/i.test(label);
-        if (cardinality && isCardinality) {
-          const direction = start.x <= end.x ? 1 : -1;
-          const yOffset = 6 + stackIndex * 12;
-          const y = start.y - yOffset;
-          const x = direction > 0 ? start.x + 6 : start.x - 6;
-          drawLabel(x, y, label, themeStyles, { alignEnd: direction < 0 });
-        } else {
+        const opts = options || {};
+        const meta = opts.meta;
+        if (opts.position === 'mid') {
           const centerX = (start.x + end.x) / 2;
           const centerY = (start.y + end.y) / 2 - 8;
-          drawLabel(centerX, centerY, label, themeStyles, { alignEnd: false });
+          return drawLabel(centerX, centerY, label, themeStyles, { alignEnd: false, muted: opts.muted, meta });
         }
+        const stackIndex = opts.stackIndex || 0;
+        const anchor = opts.anchor === 'end' ? 'end' : 'start';
+        const outward = typeof opts.outward === 'number' ? opts.outward : 10;
+        const sourceDir = start.x <= end.x ? 1 : -1;
+        const direction = anchor === 'end' ? -sourceDir : sourceDir;
+        const anchorPoint = anchor === 'end' ? end : start;
+        const yOffset = 6 + stackIndex * LABEL_STACK_SPACING;
+        const y = anchorPoint.y - yOffset;
+        const x = anchorPoint.x + direction * outward;
+        return drawLabel(x, y, label, themeStyles, { alignEnd: direction < 0, muted: opts.muted, meta });
       }
 
       function drawLabel(x, y, textValue, themeStyles, options) {
@@ -542,23 +925,36 @@ export function getWebviewContent(
         text.setAttribute('font-weight', '600');
         text.setAttribute('text-anchor', alignEnd ? 'end' : 'start');
         text.setAttribute('dominant-baseline', 'central');
+        if (options && options.muted) text.setAttribute('opacity', '0.78');
+        if (options && options.meta) {
+          if (options.meta.from) text.dataset.from = options.meta.from;
+          if (options.meta.to) text.dataset.to = options.meta.to;
+          if (options.meta.relCount != null) text.dataset.relCount = String(options.meta.relCount);
+          if (options.meta.warning) text.dataset.warning = 'true';
+        }
         text.textContent = textValue;
         text.classList.add('edge-label');
         edgeLabelsSvg.appendChild(text);
+        return text;
       }
 
       function getThemeStyles(theme) {
+        const styles = getComputedStyle(document.body);
         if (theme === 'light') {
           return {
-            edge: '#5c6f91',
-            highlightEdge: '#387cd6',
-            labelText: 'rgba(17,26,44,0.9)'
+            edge: (styles.getPropertyValue('--edge-stroke-light') || '#5c6f91').trim(),
+            highlightEdge: (styles.getPropertyValue('--edge-highlight-light') || '#4d8dff').trim(),
+            labelText: 'rgba(17,26,44,0.9)',
+            anchorFill: (styles.getPropertyValue('--edge-anchor-light') || 'rgba(8,19,32,0.7)').trim(),
+            anchorStroke: 'rgba(255,255,255,0.9)',
           };
         }
         return {
-          edge: '#8ca2c7',
-          highlightEdge: '#9fe6ff',
-          labelText: 'rgba(255,255,255,0.9)'
+          edge: (styles.getPropertyValue('--edge-stroke-dark') || '#8ca2c7').trim(),
+          highlightEdge: (styles.getPropertyValue('--edge-highlight-dark') || '#a8e2ff').trim(),
+          labelText: 'rgba(255,255,255,0.9)',
+          anchorFill: (styles.getPropertyValue('--edge-anchor-dark') || 'rgba(255,255,255,0.85)').trim(),
+          anchorStroke: 'rgba(5,12,24,0.6)',
         };
       }
 
@@ -570,6 +966,7 @@ export function getWebviewContent(
       }
 
       function renderEdges() {
+        const debugStart = DEBUG_PIPES ? performance.now() : 0;
         let maxX = 0;
         let maxY = 0;
         const padding = 600;
@@ -592,46 +989,69 @@ export function getWebviewContent(
         edgeLabelsSvg.setAttribute('height', String(height));
         edgesSvg.innerHTML = '';
         edgeLabelsSvg.innerHTML = '';
-        const groups = createRelationshipGroups(model.relationships || []);
-        const anchorMaps = buildAnchorMaps(model.entities, groups, nodesLayer, positions);
+        edgeElements.clear();
+        hoverGroupId = null;
+        relationshipGroups = createRelationshipGroups(model.relationships || [], model.entities || []);
+        groupIndexByEntity = buildGroupIndex(relationshipGroups);
+        const anchorMaps = buildAnchorMaps(model.entities, relationshipGroups, nodesLayer, positions);
         const theme = document.body.dataset.theme || 'dark';
-        const themeStyles = getThemeStyles(theme);
-        groups.forEach(function (group, groupIndex) {
+        currentThemeStyles = getThemeStyles(theme);
+
+        relationshipGroups.forEach(function (group, groupIndex) {
           const startAnchor = anchorMaps.sourceAnchors[groupIndex];
           const endAnchor = anchorMaps.targetAnchors[groupIndex];
-          if (!startAnchor || !endAnchor) return;
+          if (!startAnchor || !endAnchor) {
+            warnWithId('Missing anchor for relationship', group);
+            return;
+          }
+          const sourceMeta = entityMetrics[group.from] || null;
+          const targetMeta = entityMetrics[group.to] || null;
           const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-          const d = buildSmoothPath(startAnchor, endAnchor, groupIndex);
-          const edgeColor = themeStyles.edge;
+          const d = buildPipelinePath(startAnchor, endAnchor, {
+            selfLoop: group.from === group.to,
+            variant: groupIndex,
+            sourceMeta,
+            targetMeta,
+          });
         path.setAttribute('d', d);
-          path.setAttribute('stroke', edgeColor);
+          path.setAttribute('stroke', currentThemeStyles.edge);
           path.setAttribute('stroke-width', '2');
           path.setAttribute('fill', 'none');
           path.setAttribute('opacity', '0.9');
           path.setAttribute('stroke-linecap', 'round');
           path.setAttribute('stroke-linejoin', 'round');
+          path.classList.add('edge-pipe');
+          path.dataset.groupId = group.id;
+          path.dataset.from = group.from;
+          path.dataset.to = group.to;
+          path.dataset.relCount = String(group.indexes.length);
           edgesSvg.appendChild(path);
+
+          const startDot = createAnchorDot(startAnchor, currentThemeStyles);
+          const endDot = createAnchorDot(endAnchor, currentThemeStyles);
+          startDot.dataset.groupId = group.id;
+          startDot.dataset.role = 'anchor-start';
+          endDot.dataset.groupId = group.id;
+          endDot.dataset.role = 'anchor-end';
+
           path.addEventListener('pointerenter', function () {
-            path.setAttribute('stroke', themeStyles.highlightEdge || '#aee2ff');
-            highlightEntities(group.from, group.to, true);
+            setPipeHover(group.id, true);
           });
           path.addEventListener('pointerleave', function () {
-            path.setAttribute('stroke', themeStyles.edge);
-            highlightEntities(group.from, group.to, false);
+            setPipeHover(group.id, false);
           });
-          const stackCount = group.indexes.length;
-          group.indexes.forEach(function (relIndex, stackIdx) {
-            const rel = model.relationships[relIndex];
-            if (!rel) return;
-            if (rel.cardinality) {
-              addRelationshipLabel(rel.cardinality, startAnchor, endAnchor, themeStyles, {
-                cardinality: true,
-                stackIndex: stackIdx,
-                stackCount,
-              });
-            }
-          });
+
+          const labels = renderCardinalityStack(group, startAnchor, endAnchor, currentThemeStyles);
+          edgeElements.set(group.id, { path, startDot, endDot, startAnchor, endAnchor, group, labels });
         });
+
+        applyFocusState();
+        applyKeyboardPreviewState();
+        if (DEBUG_PIPES) {
+          logDebug('renderEdges', (performance.now() - debugStart).toFixed(2) + 'ms');
+        }
+        zoomRenderTimeout = null;
+        zoomRenderRaf = null;
       }
 
       function attachEventHandlers() {
@@ -643,8 +1063,8 @@ export function getWebviewContent(
             settingsMenu.classList.remove('active');
           }
         });
-        zoomInBtn.addEventListener('click', function () { adjustZoom(1.2); });
-        zoomOutBtn.addEventListener('click', function () { adjustZoom(0.8); });
+        zoomInBtn.addEventListener('click', function () { adjustZoom(1 + KEYBOARD_ZOOM_STEP); });
+        zoomOutBtn.addEventListener('click', function () { adjustZoom(1 / (1 + KEYBOARD_ZOOM_STEP)); });
         resetViewBtn.addEventListener('click', function () {
           viewportScale = 1;
           viewportTx = 40;
@@ -677,14 +1097,12 @@ export function getWebviewContent(
         canvasEl.addEventListener('wheel', function (event) {
           if (event.ctrlKey || event.metaKey) {
             event.preventDefault();
-            const delta = event.deltaY < 0 ? 1.1 : 0.9;
+            const pinchFactor = Math.exp(-event.deltaY * PINCH_SENSITIVITY);
+            const delta = clamp(pinchFactor, 0.82, 1.22);
             const rect = canvasEl.getBoundingClientRect();
             const point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
             zoomAround(delta, point);
-            if (zoomRenderTimeout) clearTimeout(zoomRenderTimeout);
-            zoomRenderTimeout = setTimeout(function () {
-              renderEdges();
-            }, 80);
+            scheduleEdgeRender();
           } else {
             viewportTx -= event.deltaX;
             viewportTy -= event.deltaY;
@@ -696,7 +1114,9 @@ export function getWebviewContent(
         let panState = null;
         canvasEl.addEventListener('pointerdown', function (event) {
           const target = event.target;
-          if (target instanceof HTMLElement && target.closest('.entity-card')) return;
+          const isCard = target instanceof HTMLElement && target.closest('.entity-card');
+          const isEdge = target instanceof SVGElement && target.closest && (target.closest('#edges') || target.closest('#edgeLabels'));
+          if (isCard || isEdge) return;
           panState = { startX: event.clientX, startY: event.clientY, tx: viewportTx, ty: viewportTy };
           canvasEl.setPointerCapture(event.pointerId);
         });
@@ -713,14 +1133,33 @@ export function getWebviewContent(
             persistViewState();
           }
         });
+        canvasEl.addEventListener('click', function (event) {
+          const target = event.target;
+          const isCard = target instanceof HTMLElement && target.closest('.entity-card');
+          const isEdge = target instanceof SVGElement && target.closest && (target.closest('#edges') || target.closest('#edgeLabels'));
+          if (isCard || isEdge) return;
+          if (focusEntity) {
+            clearFocus();
+            selectedEntity = null;
+            highlightSelection();
+            persistState();
+          }
+        });
 
         document.addEventListener('keydown', function (event) {
+          if (event.key === 'Escape') {
+            if (hoverGroupId) setPipeHover(hoverGroupId, false);
+            clearFocus();
+            return;
+          }
           if ((event.metaKey || event.ctrlKey) && (event.key === '=' || event.key === '+')) {
             event.preventDefault();
-            adjustZoom(1.1);
+            adjustZoom(1 + KEYBOARD_ZOOM_STEP);
+            scheduleEdgeRender();
           } else if ((event.metaKey || event.ctrlKey) && event.key === '-') {
             event.preventDefault();
-            adjustZoom(0.9);
+            adjustZoom(1 / (1 + KEYBOARD_ZOOM_STEP));
+            scheduleEdgeRender();
           } else if ((event.metaKey || event.ctrlKey) && event.key === '0') {
             event.preventDefault();
             viewportScale = 1;
@@ -753,11 +1192,13 @@ export function getWebviewContent(
           const card = target instanceof HTMLElement ? target.closest('.entity-card') : null;
           if (!card) {
             selectedEntity = null;
+            clearFocus();
             highlightSelection();
             persistState();
             return;
           }
           selectedEntity = card.dataset.entity || null;
+          if (selectedEntity) setFocus(selectedEntity);
           highlightSelection();
           persistState();
         });
@@ -809,6 +1250,157 @@ export function getWebviewContent(
         });
       }
 
+      function setLabelsState(entry, mode) {
+        if (!entry.labels) return;
+        entry.labels.forEach(function (label) {
+          label.classList.remove('label-hover', 'label-focused', 'label-dimmed');
+          if (mode === 'hover') label.classList.add('label-hover');
+          else if (mode === 'focus') label.classList.add('label-focused');
+          else if (mode === 'dim') label.classList.add('label-dimmed');
+        });
+      }
+
+      function setPipeHover(groupId, active) {
+        const entry = edgeElements.get(groupId);
+        if (!entry) return;
+        if (active) {
+          hoverGroupId = groupId;
+          entry.path.classList.add('hover');
+          entry.path.classList.remove('edge-pipe-preview');
+          entry.path.setAttribute('stroke', currentThemeStyles.highlightEdge);
+          entry.startDot.classList.add('hover');
+          entry.endDot.classList.add('hover');
+          setLabelsState(entry, 'hover');
+          highlightEntities(entry.group.from, entry.group.to, true);
+          return;
+        }
+        if (hoverGroupId !== groupId) return;
+        hoverGroupId = null;
+        entry.path.classList.remove('hover');
+        entry.startDot.classList.remove('hover');
+        entry.endDot.classList.remove('hover');
+        setLabelsState(entry, null);
+        highlightEntities(entry.group.from, entry.group.to, false);
+        applyFocusState();
+        applyKeyboardPreviewState();
+      }
+
+      function applyFocusState() {
+        const active = Boolean(focusEntity);
+        const overlayActive = active && !focusOverlaySuppressed;
+        document.body.classList.toggle('focus-mode', overlayActive);
+        nodesLayer.querySelectorAll('.entity-card').forEach(function (card) {
+          const name = card.dataset.entity;
+          let role = 'none';
+          if (active) {
+            if (name === focusEntity) role = 'primary';
+            else if (focusNeighbors.has(name)) role = 'neighbor';
+            else role = 'dimmed';
+          }
+          card.dataset.focusRole = role;
+          card.setAttribute('aria-pressed', role === 'primary' ? 'true' : 'false');
+          if (!active && !card.classList.contains('selected')) {
+            card.classList.remove('edge-hover');
+          }
+        });
+        edgeElements.forEach(function (entry) {
+          const path = entry.path;
+          const startDot = entry.startDot;
+          const endDot = entry.endDot;
+          if (!active) {
+            if (!path.classList.contains('hover')) path.setAttribute('stroke', currentThemeStyles.edge);
+            path.classList.remove('focused', 'dimmed');
+            startDot.classList.remove('focused', 'dimmed');
+            endDot.classList.remove('focused', 'dimmed');
+            if (!path.classList.contains('hover')) setLabelsState(entry, null);
+            return;
+          }
+          if (path.classList.contains('hover')) {
+            setLabelsState(entry, 'hover');
+            return;
+          }
+          const isFocusPipe = entry.group.from === focusEntity || entry.group.to === focusEntity;
+          path.classList.remove('focused', 'dimmed');
+          startDot.classList.remove('focused', 'dimmed');
+          endDot.classList.remove('focused', 'dimmed');
+          if (isFocusPipe) {
+            path.classList.add('focused');
+            path.setAttribute('stroke', currentThemeStyles.highlightEdge);
+            startDot.classList.add('focused');
+            endDot.classList.add('focused');
+            setLabelsState(entry, 'focus');
+          } else {
+            path.classList.add('dimmed');
+            path.setAttribute('stroke', currentThemeStyles.edge);
+            startDot.classList.add('dimmed');
+            endDot.classList.add('dimmed');
+            setLabelsState(entry, 'dim');
+          }
+        });
+      }
+
+      function applyKeyboardPreviewState() {
+        if (focusEntity) {
+          keyboardPreviewEntity = null;
+        }
+        nodesLayer.querySelectorAll('.entity-card').forEach(function (card) {
+          const isPreview = keyboardPreviewEntity && card.dataset.entity === keyboardPreviewEntity;
+          card.classList.toggle('keyboard-preview', Boolean(isPreview));
+        });
+        edgeElements.forEach(function (entry) {
+          if (entry.path.classList.contains('hover')) return;
+          const isPreview = keyboardPreviewEntity && (entry.group.from === keyboardPreviewEntity || entry.group.to === keyboardPreviewEntity);
+          entry.path.classList.toggle('edge-pipe-preview', Boolean(isPreview));
+        });
+      }
+
+      function handleCardFocus(name) {
+        if (focusEntity) return;
+        keyboardPreviewEntity = name;
+        applyKeyboardPreviewState();
+      }
+
+      function handleCardBlur() {
+        keyboardPreviewEntity = null;
+        applyKeyboardPreviewState();
+      }
+
+      function computeFocusNeighbors(name) {
+        const neighbors = new Set();
+        (groupIndexByEntity.get(name) || []).forEach(function (entry) {
+          const other = entry.group.from === name ? entry.group.to : entry.group.from;
+          if (other && other !== name) neighbors.add(other);
+        });
+        return neighbors;
+      }
+
+      function setFocus(name) {
+        if (!name) return;
+        focusEntity = name;
+        focusNeighbors = computeFocusNeighbors(name);
+        keyboardPreviewEntity = null;
+        applyFocusState();
+        applyKeyboardPreviewState();
+      }
+
+      function toggleFocus(name) {
+        if (focusEntity === name) {
+          clearFocus();
+          return;
+        }
+        setFocus(name);
+      }
+
+      function clearFocus() {
+        if (!focusEntity && focusNeighbors.size === 0) return;
+        focusEntity = null;
+        focusNeighbors = new Set();
+        focusOverlaySuppressed = false;
+        document.body.classList.remove('focus-mode');
+        applyFocusState();
+        applyKeyboardPreviewState();
+      }
+
       function applyTheme() {
         const theme = themePreference === 'system' ? inferVsCodeTheme() : themePreference;
         document.body.dataset.theme = theme;
@@ -830,7 +1422,7 @@ export function getWebviewContent(
       }
 
       function zoomAround(factor, point) {
-        const newScale = Math.max(0.3, Math.min(3.5, viewportScale * factor));
+        const newScale = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, viewportScale * factor));
         const worldX = (point.x - viewportTx) / viewportScale;
         const worldY = (point.y - viewportTy) / viewportScale;
         viewportScale = newScale;
@@ -838,17 +1430,42 @@ export function getWebviewContent(
         viewportTy = point.y - worldY * viewportScale;
         applyViewportTransform();
         persistViewState();
+        scheduleEdgeRender();
       }
 
       function applyViewportTransform() {
         viewportEl.style.transform = 'translate(' + viewportTx + 'px,' + viewportTy + 'px) scale(' + viewportScale + ')';
       }
 
+      function scheduleEdgeRender() {
+        if (zoomRenderRaf) cancelAnimationFrame(zoomRenderRaf);
+        zoomRenderRaf = requestAnimationFrame(function () {
+          if (zoomRenderTimeout) clearTimeout(zoomRenderTimeout);
+          zoomRenderTimeout = window.setTimeout(function () {
+            renderEdges();
+          }, ZOOM_RERENDER_DELAY);
+        });
+      }
+
+      function forceRenderEdges() {
+        if (zoomRenderRaf) {
+          cancelAnimationFrame(zoomRenderRaf);
+          zoomRenderRaf = null;
+        }
+        if (zoomRenderTimeout) {
+          clearTimeout(zoomRenderTimeout);
+          zoomRenderTimeout = null;
+        }
+        renderEdges();
+      }
+
       function exportImage(kind) {
         const htmlToImage = window.htmlToImage;
         if (!htmlToImage) return;
-        const target = viewportEl.cloneNode(true);
-        target.style.transform = 'translate(0px,0px) scale(1)';
+        forceRenderEdges();
+        const target = canvasEl.cloneNode(true);
+        const viewportClone = target.querySelector('#viewport');
+        if (viewportClone) viewportClone.style.transform = 'translate(0px,0px) scale(1)';
         const theme = document.body.dataset.theme || 'dark';
         const bgChoice = (exportBgSelect.value || 'auto');
         let background = 'transparent';
@@ -936,6 +1553,20 @@ export function getWebviewContent(
         observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });
       }
 
+      function observeVisibilityChanges() {
+        document.addEventListener('visibilitychange', function () {
+          if (document.hidden) {
+            if (focusEntity) {
+              focusOverlaySuppressed = true;
+              document.body.classList.remove('focus-mode');
+            }
+          } else {
+            focusOverlaySuppressed = false;
+            applyFocusState();
+          }
+        });
+      }
+
       function normalizeLayout(input) {
         const map = {};
         if (!input || !Array.isArray(input.entities)) return map;
@@ -967,4 +1598,5 @@ function getNonce() {
   for (let i = 0; i < 32; i++) s += chars.charAt(Math.floor(Math.random() * chars.length));
   return s;
 }
+
  

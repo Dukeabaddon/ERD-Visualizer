@@ -19,7 +19,7 @@
 
 1. **Install**  
    - Marketplace: click the badge above (updates `vscode:extension/publisher-id.erd-visualizer` once published).  
-   - Manual: clone this repo, run `npm install && npm run compile`, then press `F5` in VS Code to launch an Extension Development Host.
+   - Manual: clone this repo, run `pnpm install && pnpm run compile`, then press `F5` in VS Code to launch an Extension Development Host.
 2. **Open a schema** (`.sql` or canonical `.json`) and click the ERD icon in the editor title or run `ERD: Visualize current schema`.
 3. **Arrange & annotate**: drag tables, watch connectors reroute, and let the layout persist with your workspace.
 4. **Export**: open the toolbar popover to capture SVG/PNG in dark, light, or transparent backgrounds.
@@ -81,12 +81,12 @@ The editor-title icon automatically appears for JSON/SQL files (based on `resour
 ```bash
 git clone https://github.com/your-org/erd-visualizer-extension.git
 cd erd-visualizer-extension
-npm install
-npm run compile        # builds to /out and copies resources
+pnpm install
+pnpm run compile        # builds to /out and copies resources
 # Press F5 in VS Code to launch the Extension Development Host
 ```
 
-- **Tests**: `npm test` (Jest) + `npm run test:contrib` (ensures editor/title contribution integrity).  
+- **Tests**: `pnpm test` (Jest) + `pnpm run test:contrib` (ensures editor/title contribution integrity).  
 - **Linting**: ESLint/Prettier recommended (configure per team standards).  
 - **Specs & proposals**: see `openspec/` for change tracking and implementation notes.
 
