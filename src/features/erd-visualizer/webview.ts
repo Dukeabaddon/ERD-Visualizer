@@ -343,7 +343,7 @@ export function getWebviewContent(
   </div>
           <div style="display:flex;gap:8px;margin-top:10px;">
             <button class="menu-button primary" id="exportPng">PNG</button>
-            <button class="menu-button" id="exportSvg">SVG</button>
+            <button class="menu-button" id="exportJpg">JPG</button>
             <button class="menu-button" id="exportPdf">PDF</button>
           </div>
         </div>
@@ -387,7 +387,7 @@ export function getWebviewContent(
       const zoomOutBtn = document.getElementById('zoomOut');
       const resetViewBtn = document.getElementById('resetView');
       const exportPngBtn = document.getElementById('exportPng');
-      const exportSvgBtn = document.getElementById('exportSvg');
+      const exportJpgBtn = document.getElementById('exportJpg');
       const exportPdfBtn = document.getElementById('exportPdf');
       const resetLayoutBtn = document.getElementById('resetLayout');
       const exportBgSelect = document.getElementById('exportBg');
@@ -430,6 +430,7 @@ export function getWebviewContent(
       let persistTimer = null;
       let zoomRenderTimeout = null;
       let zoomRenderRaf = null;
+      let diagramBounds = { width: 0, height: 0, minX: 0, minY: 0 };
 
       applyTheme();
       renderEntities();
@@ -983,9 +984,11 @@ export function getWebviewContent(
 
       function renderEdges() {
         const debugStart = DEBUG_PIPES ? performance.now() : 0;
-        let maxX = 0;
-        let maxY = 0;
-        const padding = 600;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        let minX = Infinity;
+        let minY = Infinity;
+        const padding = 400;
         model.entities.forEach(function (entity) {
           const card = nodesLayer.querySelector('.entity-card[data-entity="' + CSS.escape(entity.name) + '"]');
           if (!card) return;
@@ -994,9 +997,18 @@ export function getWebviewContent(
           if (!pos) return;
           maxX = Math.max(maxX, pos.x + rect.width);
           maxY = Math.max(maxY, pos.y + rect.height);
+          minX = Math.min(minX, pos.x);
+          minY = Math.min(minY, pos.y);
         });
-        const width = maxX + padding;
-        const height = maxY + padding;
+        if (!isFinite(minX)) {
+          minX = 0;
+          minY = 0;
+          maxX = canvasEl.clientWidth;
+          maxY = canvasEl.clientHeight;
+        }
+        const width = Math.max(1, Math.ceil(maxX - minX + padding * 2));
+        const height = Math.max(1, Math.ceil(maxY - minY + padding * 2));
+        diagramBounds = { width, height, minX: minX - padding, minY: minY - padding };
         edgesSvg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
         edgesSvg.setAttribute('width', String(width));
         edgesSvg.setAttribute('height', String(height));
@@ -1089,7 +1101,7 @@ export function getWebviewContent(
           persistViewState();
         });
         exportPngBtn.addEventListener('click', function () { exportImage('png'); });
-        exportSvgBtn.addEventListener('click', function () { exportImage('svg'); });
+        if (exportJpgBtn) exportJpgBtn.addEventListener('click', function () { exportImage('jpg'); });
         exportPdfBtn.addEventListener('click', function () { exportImage('pdf'); });
         resetLayoutBtn.addEventListener('click', function () {
           layoutMap = {};
@@ -1477,6 +1489,60 @@ export function getWebviewContent(
         renderEdges();
       }
 
+      function runWithExportSurface(task) {
+        const bounds =
+          diagramBounds.width > 0 && diagramBounds.height > 0
+            ? { ...diagramBounds }
+            : { width: canvasEl.clientWidth || 1, height: canvasEl.clientHeight || 1 };
+        const offsetX = (diagramBounds.minX || 0) * -1;
+        const offsetY = (diagramBounds.minY || 0) * -1;
+        const original = {
+          width: canvasEl.style.width,
+          height: canvasEl.style.height,
+          left: canvasEl.style.left,
+          top: canvasEl.style.top,
+          right: canvasEl.style.right,
+          bottom: canvasEl.style.bottom,
+          inset: canvasEl.style.inset,
+          position: canvasEl.style.position,
+          overflow: canvasEl.style.overflow,
+          canvasTransition: canvasEl.style.transition,
+          viewportTransition: viewportEl.style.transition,
+        };
+        const originalViewportTransform = viewportEl.style.transform;
+        canvasEl.style.transition = 'none';
+        viewportEl.style.transition = 'none';
+        canvasEl.style.inset = 'auto';
+        canvasEl.style.left = '0';
+        canvasEl.style.top = '0';
+        canvasEl.style.right = 'auto';
+        canvasEl.style.bottom = 'auto';
+        canvasEl.style.position = 'relative';
+        canvasEl.style.width = bounds.width + 'px';
+        canvasEl.style.height = bounds.height + 'px';
+        canvasEl.style.overflow = 'visible';
+        viewportEl.style.transform = 'translate(' + offsetX + 'px,' + offsetY + 'px) scale(1)';
+        return Promise.resolve()
+          .then(function () {
+            return task(bounds);
+          })
+          .finally(function () {
+            canvasEl.style.width = original.width;
+            canvasEl.style.height = original.height;
+            canvasEl.style.left = original.left;
+            canvasEl.style.top = original.top;
+            canvasEl.style.right = original.right;
+            canvasEl.style.bottom = original.bottom;
+            canvasEl.style.inset = original.inset;
+            canvasEl.style.position = original.position;
+            canvasEl.style.overflow = original.overflow;
+            canvasEl.style.transition = original.canvasTransition;
+            viewportEl.style.transition = original.viewportTransition;
+            viewportEl.style.transform = originalViewportTransform;
+            applyViewportTransform();
+          });
+      }
+
       function exportImage(kind) {
         const htmlToImage = window.htmlToImage;
         if (!htmlToImage) {
@@ -1484,26 +1550,31 @@ export function getWebviewContent(
           return;
         }
         forceRenderEdges();
-        const target = canvasEl.cloneNode(true);
-        const viewportClone = target.querySelector('#viewport');
-        if (viewportClone) viewportClone.style.transform = 'translate(0px,0px) scale(1)';
         const theme = document.body.dataset.theme || 'dark';
         const bgChoice = (exportBgSelect.value || 'auto');
         let background = 'transparent';
         if (bgChoice === 'auto') background = theme === 'dark' ? getComputedStyle(document.body).getPropertyValue('--canvas-bg-dark') : getComputedStyle(document.body).getPropertyValue('--canvas-bg-light');
         else if (bgChoice === 'dark') background = getComputedStyle(document.body).getPropertyValue('--canvas-bg-dark');
         else if (bgChoice === 'light') background = getComputedStyle(document.body).getPropertyValue('--canvas-bg-light');
+        if (kind === 'jpg' && background === 'transparent') {
+          background = theme === 'dark'
+            ? getComputedStyle(document.body).getPropertyValue('--canvas-bg-dark')
+            : getComputedStyle(document.body).getPropertyValue('--canvas-bg-light');
+        }
         const scale = Number(exportScaleSelect.value) || 2;
-        if (kind === 'png') {
-          htmlToImage.toPng(target, { pixelRatio: scale, backgroundColor: background }).then(function (dataUrl) {
-            downloadDataUrl(dataUrl, 'erd.png');
-          }).catch(function (error) { reportExportError('png', error); });
-        } else if (kind === 'svg') {
-          htmlToImage.toSvg(target, { pixelRatio: scale, backgroundColor: background }).then(function (dataUrl) {
-            downloadDataUrl(dataUrl, 'erd.svg');
-          }).catch(function (error) { reportExportError('svg', error); });
-        } else {
-          htmlToImage.toPng(target, { pixelRatio: scale, backgroundColor: background }).then(async function (dataUrl) {
+        const options = { pixelRatio: scale, backgroundColor: background };
+        runWithExportSurface(function () {
+          if (kind === 'png') {
+            return htmlToImage.toPng(canvasEl, options).then(function (dataUrl) {
+              downloadDataUrl(dataUrl, 'erd.png');
+            });
+          }
+          if (kind === 'jpg') {
+            return htmlToImage.toJpeg(canvasEl, { ...options, quality: 0.92 }).then(function (dataUrl) {
+              downloadDataUrl(dataUrl, 'erd.jpg');
+            });
+          }
+          return htmlToImage.toPng(canvasEl, options).then(async function (dataUrl) {
             const pdfLib = window.PDFLib;
             if (!pdfLib) throw new Error('PDFLib unavailable');
             const pdfDoc = await pdfLib.PDFDocument.create();
@@ -1518,8 +1589,8 @@ export function getWebviewContent(
             const url = URL.createObjectURL(blob);
             downloadUrl(url, 'erd.pdf');
             URL.revokeObjectURL(url);
-          }).catch(function (error) { reportExportError('pdf', error); });
-        }
+          });
+        }).catch(function (error) { reportExportError(kind, error); });
       }
 
       function downloadDataUrl(dataUrl, name) {

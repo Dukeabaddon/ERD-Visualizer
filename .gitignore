@@ -8,6 +8,7 @@ AGENTS.md
 .cursor/
 .vscode/
 .DS_Store
+images/
 dist/
 coverage/
 *.log
