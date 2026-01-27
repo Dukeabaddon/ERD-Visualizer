@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.1] - 2026-01-27
+
+- Fixed parser issues with nested parentheses in SQL (e.g. `CHECK` constraints, `DEFAULT` functions).
+- Improved compatibility: Lowered minimum VS Code version to `1.85.0`.
+- Added support for Databricks/Spark SQL syntax (Complex types, Table options).
+- Added robust error handling and user notifications.
+
 ## [0.1.0] - 2025-11-20
 
 - Initial public preview of the ERD Visualizer extension.

@@ -7,52 +7,77 @@ import * as path from 'path';
 
 export function registerCommands(context: vscode.ExtensionContext): vscode.Disposable[] {
   const openCmd = vscode.commands.registerCommand('erdVisualizer.open', async () => {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor) {
-      vscode.window.showInformationMessage('Open a SQL or JSON schema file to visualize.');
-      return;
+    try {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) {
+        vscode.window.showInformationMessage('Open a SQL or JSON schema file to visualize.');
+        return;
+      }
+      const text = editor.document.getText();
+      await openVisualizerPanel(context, text, editor.document.uri);
+    } catch (error) {
+      handleCommandError('erdVisualizer.open', error);
     }
-    const text = editor.document.getText();
-    await openVisualizerPanel(context, text, editor.document.uri);
   });
 
   const openForEditorCmd = vscode.commands.registerCommand('erdVisualizer.openForEditor', async (uri?: vscode.Uri) => {
-    // If a uri is passed (from editor/title), use it; otherwise fall back to active editor
-    let doc: vscode.TextDocument | undefined;
-    if (uri) {
-      try {
-        doc = await vscode.workspace.openTextDocument(uri);
-      } catch (e) {
-        // ignore and fallback
-        doc = undefined;
+    try {
+      // If a uri is passed (from editor/title), use it; otherwise fall back to active editor
+      let doc: vscode.TextDocument | undefined;
+      if (uri) {
+        try {
+          doc = await vscode.workspace.openTextDocument(uri);
+        } catch (e) {
+          // ignore and fallback
+          doc = undefined;
+        }
       }
+      if (!doc && vscode.window.activeTextEditor) {
+        doc = vscode.window.activeTextEditor.document;
+      }
+      if (!doc) {
+        vscode.window.showInformationMessage('Open a SQL or JSON schema file to visualize.');
+        return;
+      }
+      // simple language/extension check
+      const lang = doc.languageId;
+      const ext = doc.fileName ? doc.fileName.split('.').pop() : '';
+      if (!(lang === 'json' || lang === 'sql' || ext === 'json' || ext === 'sql')) {
+        vscode.window.showInformationMessage('ERD Visualizer: file type not supported');
+        return;
+      }
+      const text = doc.getText();
+      await openVisualizerPanel(context, text, doc.uri);
+    } catch (error) {
+      handleCommandError('erdVisualizer.openForEditor', error);
     }
-    if (!doc && vscode.window.activeTextEditor) {
-      doc = vscode.window.activeTextEditor.document;
-    }
-    if (!doc) {
-      vscode.window.showInformationMessage('Open a SQL or JSON schema file to visualize.');
-      return;
-    }
-    // simple language/extension check
-    const lang = doc.languageId;
-    const ext = doc.fileName ? doc.fileName.split('.').pop() : '';
-    if (!(lang === 'json' || lang === 'sql' || ext === 'json' || ext === 'sql')) {
-      vscode.window.showInformationMessage('ERD Visualizer: file type not supported');
-      return;
-    }
-    const text = doc.getText();
-    await openVisualizerPanel(context, text, doc.uri);
   });
 
   const openFileCmd = vscode.commands.registerCommand('erdVisualizer.openFromFile', async () => {
-    const uri = await vscode.window.showOpenDialog({ canSelectMany: false, filters: { 'SQL/JSON': ['sql', 'json'] } });
-    if (!uri || uri.length === 0) return;
-    const doc = await vscode.workspace.openTextDocument(uri[0]);
-    await openVisualizerPanel(context, doc.getText(), uri[0]);
+    try {
+      const uri = await vscode.window.showOpenDialog({ canSelectMany: false, filters: { 'SQL/JSON': ['sql', 'json'] } });
+      if (!uri || uri.length === 0) return;
+      const doc = await vscode.workspace.openTextDocument(uri[0]);
+      await openVisualizerPanel(context, doc.getText(), uri[0]);
+    } catch (error) {
+      handleCommandError('erdVisualizer.openFromFile', error);
+    }
   });
 
   return [openCmd, openForEditorCmd, openFileCmd];
+}
+
+/**
+ * Handles command errors with user-friendly messages and logging
+ */
+function handleCommandError(commandName: string, error: unknown): void {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  console.error(`[ERD Visualizer] Error in ${commandName}:`, error);
+  
+  vscode.window.showErrorMessage(
+    `ERD Visualizer encountered an error: ${errorMessage}. ` +
+    `Please report this issue at https://github.com/Dukeabaddon/ERD-Visualizer/issues`
+  );
 }
 
 async function openVisualizerPanel(context: vscode.ExtensionContext, text: string, sourceUri?: vscode.Uri) {

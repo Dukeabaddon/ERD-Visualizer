@@ -564,24 +564,45 @@ function fromJsonShape(obj: z.infer<typeof SchemaShape>): SchemaModel {
 function legacyParseSql(sql: string): SchemaModel {
   const entities: Entity[] = [];
   const relationships: Relationship[] = [];
-  const normalized = sql.replace(/\r\n/g, '\n');
+  const normalized = stripComments(sql).replace(/\r\n/g, '\n');
 
-  // match CREATE TABLE blocks
-  const blockRegex = /create\s+table\s+([`\"]?\w+[`\"]?)\s*\(([\s\S]*?)\)\s*;/gi;
-  let m: RegExpExecArray | null;
-  while ((m = blockRegex.exec(normalized))) {
-    const rawName = m[1].replace(/[`\"]/g, '');
-    const body = m[2];
-    const entity: Entity = { id: rawName, name: rawName, columns: [] };
+  // Robustly extract table blocks (handling nested parentheses)
+  const blocks = findTableBlocks(normalized);
 
-    // Split on commas that are followed by optional whitespace and a newline OR end of definition
-    const lines = body.split(/,\s*\n|,\s*(?=[^\)]*$)/);
+  for (const block of blocks) {
+    const rawName = block.name;
+    const body = block.body;
+    const entity: Entity = {
+      id: rawName,
+      name: rawName,
+      columns: [],
+      iconHint: deriveIconHint(rawName),
+      palette: derivePalette(rawName),
+    };
+
+    // Split on commas, but be smarter about nested structures like ARRAY<STRING> or MAP<K,V>
+    const lines = splitColumnDefinitions(body);
+
     for (let ln of lines) {
       ln = ln.trim();
       if (!ln) continue;
 
+      // Skip comments
+      if (ln.startsWith('--')) continue;
+
+      // table-level CONSTRAINT ... PRIMARY KEY (...)
+      const constraintPkMatch = ln.match(/constraint\s+\w+\s+primary\s+key\s*\(([^\)]+)(?:\)|$)/i);
+      if (constraintPkMatch) {
+        const cols = constraintPkMatch[1].split(',').map(s => s.replace(/[`\"]/g, '').trim());
+        for (const cn of cols) {
+          const col = entity.columns.find(c => c.name === cn);
+          if (col) col.primary = true; else entity.columns.push({ name: cn, primary: true });
+        }
+        continue;
+      }
+
       // table-level PRIMARY KEY (...)
-      const pkMatch = ln.match(/primary\s+key\s*\(([^\)]+)\)/i);
+      const pkMatch = ln.match(/primary\s+key\s*\(([^\)]+)(?:\)|$)/i);
       if (pkMatch) {
         const cols = pkMatch[1].split(',').map(s => s.replace(/[`\"]/g, '').trim());
         for (const cn of cols) {
@@ -592,10 +613,10 @@ function legacyParseSql(sql: string): SchemaModel {
       }
 
       // table-level FOREIGN KEY (...) REFERENCES other_table(...)
-      const fkMatch = ln.match(/foreign\s+key\s*\(([^\)]+)\)\s+references\s+([`\"]?[\w\.]+[`\"]?)\s*\(([^\)]+)\)/i);
+      const fkMatch = ln.match(/foreign\s+key\s*\(([^\)]+)\)\s+references\s+([`\"]?[\w\.]+[`\"]?)\s*\(([^\)]+)(?:\)|$)/i);
       if (fkMatch) {
         const fromCols = fkMatch[1].split(',').map(s => s.replace(/[`\"]/g, '').trim());
-        const toTable = fkMatch[2].replace(/[`\"]/g, '');
+        const toTable = fkMatch[2].replace(/[`\"]/g, '').split('.').pop() || fkMatch[2];
         const toCols = fkMatch[3].split(',').map(s => s.replace(/[`\"]/g, '').trim());
         for (let i = 0; i < fromCols.length; i++) {
           const from = fromCols[i];
@@ -608,24 +629,54 @@ function legacyParseSql(sql: string): SchemaModel {
         continue;
       }
 
-      // column definition like `id` int(11) primary key,
-      const colMatch = ln.match(/^([`\"]?\w+[`\"]?)\s+([\w\(\)]+)(.*)$/i);
+      // column definition - enhanced to handle complex types like ARRAY<STRING>, MAP<K,V>, STRUCT<...>
+      const colMatch = parseColumnDefinition(ln);
       if (colMatch) {
-        const colName = colMatch[1].replace(/[`\"]/g, '');
-        const colType = colMatch[2];
-        const rest = colMatch[3] || '';
+        const { name: colName, type: colType, rest } = colMatch;
         const col: Column = { name: colName, type: colType };
+
+        // Check for NOT NULL
+        if (/not\s+null/i.test(rest)) {
+          col.nullable = false;
+        } else if (/null/i.test(rest) && !/not\s+null/i.test(rest)) {
+          col.nullable = true;
+        }
+
         if (/primary\s+key/i.test(rest) || /primary\s+key/i.test(ln)) col.primary = true;
         if (/unique/i.test(rest) || /unique/i.test(ln)) col.unique = true;
+
+        // Extract comment if present
+        const commentMatch = rest.match(/--\s*(.+)$/) || rest.match(/comment\s+'([^']+)'/i);
+        if (commentMatch) {
+          col.comment = commentMatch[1].trim();
+        }
+
         entity.columns.push(col);
+
         // inline FOREIGN KEY in column definitions (e.g., references other_table(id))
         const inlineRef = rest.match(/references\s+([`\"]?\w+[`\"]?)\s*\(([^\)]+)\)/i);
         if (inlineRef) {
           const toTable = inlineRef[1].replace(/[`\"]/g, '');
           const toCol = inlineRef[2].replace(/[`\"]/g, '').trim();
           relationships.push({ id: `${entity.name}.${colName}->${toTable}.${toCol}`, from: { entity: entity.name, column: colName }, to: { entity: toTable, column: toCol }, cardinality: 'many-to-one' });
-          // mark this column as foreign
           col.foreign = true;
+        }
+
+        // Check for FK comment hint (e.g., "-- FK to table.column")
+        const fkCommentMatch = rest.match(/--\s*FK\s+to\s+([\w.]+)/i);
+        if (fkCommentMatch) {
+          col.foreign = true;
+          const parts = fkCommentMatch[1].split('.');
+          if (parts.length >= 2) {
+            const toTable = parts[parts.length - 2];
+            const toCol = parts[parts.length - 1];
+            relationships.push({
+              id: `${entity.name}.${colName}->${toTable}.${toCol}`,
+              from: { entity: entity.name, column: colName },
+              to: { entity: toTable, column: toCol },
+              cardinality: 'many-to-one'
+            });
+          }
         }
         continue;
       }
@@ -642,6 +693,7 @@ function legacyParseSql(sql: string): SchemaModel {
   }
 
   // ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY ... OR ALTER TABLE ... ADD FOREIGN KEY ...
+  let m: RegExpExecArray | null;
   const alterFk1 = /alter\s+table\s+([`\"]?\w+[`\"]?)\s+add\s+constraint[\s\S]*?foreign\s+key\s*\(([^\)]+)\)\s+references\s+([`\"]?\w+[`\"]?)\s*\(([^\)]+)\)/gi;
   const alterFk2 = /alter\s+table\s+([`\"]?\w+[`\"]?)\s+add\s+foreign\s+key\s*\(([^\)]+)\)\s+references\s+([`\"]?\w+[`\"]?)\s*\(([^\)]+)\)/gi;
   while ((m = alterFk1.exec(normalized)) || (m = alterFk2.exec(normalized))) {
@@ -661,4 +713,225 @@ function legacyParseSql(sql: string): SchemaModel {
   }
 
   return { entities, relationships };
+}
+
+/**
+ * Strips SQL comments (both -- and / * ... * /) while respecting quoted strings
+ */
+function stripComments(sql: string): string {
+  let result = '';
+  let i = 0;
+  const len = sql.length;
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let inBackTick = false;
+
+  while (i < len) {
+    const char = sql[i];
+    const next = sql[i + 1];
+
+    if (inSingleQuote) {
+      if (char === "'" && sql[i - 1] !== '\\') inSingleQuote = false;
+      result += char;
+      i++;
+      continue;
+    }
+    if (inDoubleQuote) {
+      if (char === '"' && sql[i - 1] !== '\\') inDoubleQuote = false;
+      result += char;
+      i++;
+      continue;
+    }
+    if (inBackTick) {
+      if (char === '`' && sql[i - 1] !== '\\') inBackTick = false;
+      result += char;
+      i++;
+      continue;
+    }
+
+    // Check for quotes starter
+    if (char === "'") { inSingleQuote = true; result += char; i++; continue; }
+    if (char === '"') { inDoubleQuote = true; result += char; i++; continue; }
+    if (char === '`') { inBackTick = true; result += char; i++; continue; }
+
+    // Check for comments
+    if (char === '-' && next === '-') {
+      // Skip until newline
+      i += 2;
+      while (i < len && sql[i] !== '\n') i++;
+      result += '\n'; // Keep newline to preserve formatting if needed
+      if (i < len) i++;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      // Skip until */
+      i += 2;
+      while (i < len && !(sql[i] === '*' && sql[i + 1] === '/')) i++;
+      i += 2;
+      continue;
+    }
+
+    result += char;
+    i++;
+  }
+  return result;
+}
+
+/**
+ * Splits column definitions while being aware of nested angle brackets (for generic types)
+ * and parentheses (for precision specs like DECIMAL(10,2))
+ */
+function splitColumnDefinitions(body: string): string[] {
+  const lines: string[] = [];
+  let current = '';
+  let angleDepth = 0;
+  let parenDepth = 0;
+
+  for (let i = 0; i < body.length; i++) {
+    const char = body[i];
+
+    if (char === '<') angleDepth++;
+    else if (char === '>') angleDepth = Math.max(0, angleDepth - 1);
+    else if (char === '(') parenDepth++;
+    else if (char === ')') parenDepth = Math.max(0, parenDepth - 1);
+
+    if (char === ',' && angleDepth === 0 && parenDepth === 0) {
+      if (current.trim()) lines.push(current.trim());
+      current = '';
+    } else if (char === '\n' && angleDepth === 0 && parenDepth === 0 && current.trim().endsWith(',')) {
+      // Handle comma at end of line
+      current = current.trim().slice(0, -1);
+      if (current.trim()) lines.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+
+  if (current.trim()) lines.push(current.trim());
+  return lines;
+}
+
+/**
+ * Parses a column definition line, handling complex types like:
+ * - ARRAY<STRING>
+ * - MAP<STRING, STRING>
+ * - STRUCT<field1: STRING, field2: INT>
+ * - DECIMAL(10, 2)
+ * - VARCHAR(255)
+ */
+function parseColumnDefinition(line: string): { name: string; type: string; rest: string } | null {
+  // Remove leading/trailing whitespace
+  line = line.trim();
+
+  const lower = line.toLowerCase();
+
+  // Skip constraint lines - robust check
+  if (lower.startsWith('constraint ') ||
+    lower.startsWith('primary key ') ||
+    lower.startsWith('foreign key ') ||
+    lower.startsWith('unique ') ||
+    lower.startsWith('check ')) {
+    return null;
+  }
+
+  // Match column name (with optional quotes/backticks)
+  const nameMatch = line.match(/^([`\"]?[\w]+[`\"]?)\s+/i);
+  if (!nameMatch) return null;
+
+  const name = nameMatch[1].replace(/[`\"]/g, '');
+  let remaining = line.slice(nameMatch[0].length);
+
+  // Parse the type, handling nested angle brackets and parentheses
+  let type = '';
+  let angleDepth = 0;
+  let parenDepth = 0;
+  let i = 0;
+
+  for (; i < remaining.length; i++) {
+    const char = remaining[i];
+
+    if (char === '<') {
+      angleDepth++;
+      type += char;
+    } else if (char === '>') {
+      angleDepth = Math.max(0, angleDepth - 1);
+      type += char;
+    } else if (char === '(') {
+      parenDepth++;
+      type += char;
+    } else if (char === ')') {
+      if (parenDepth > 0) {
+        parenDepth--;
+        type += char;
+      } else {
+        // End of column definition in some dialects
+        break;
+      }
+    } else if ((char === ' ' || char === '\t') && angleDepth === 0 && parenDepth === 0) {
+      // End of type
+      break;
+    } else if (char === ',' && angleDepth === 0 && parenDepth === 0) {
+      // End of column definition
+      break;
+    } else {
+      type += char;
+    }
+  }
+
+  const rest = remaining.slice(i);
+
+  if (!type) return null;
+
+  return { name, type: type.trim(), rest };
+}
+
+
+function findTableBlocks(sql: string) {
+  const blocks: { name: string; body: string }[] = [];
+  const startRegex = /create\s+table\s+(?:if\s+not\s+exists\s+)?([`\"]?[\w.]+[`\"]?)\s*\(/gi;
+  let match;
+
+  while ((match = startRegex.exec(sql))) {
+    const rawName = match[1];
+    const startIndex = startRegex.lastIndex;
+
+    // Manual scan for balanced body
+    let balance = 1;
+    let i = startIndex;
+    let inString = false;
+    let quoteChar = '';
+
+    for (; i < sql.length; i++) {
+      const char = sql[i];
+      if (inString) {
+        if (char === quoteChar && sql[i - 1] !== '\\') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (char === "'" || char === '"' || char === '`') {
+        inString = true;
+        quoteChar = char;
+        continue;
+      }
+
+      if (char === '(') balance++;
+      else if (char === ')') {
+        balance--;
+        if (balance === 0) break;
+      }
+    }
+
+    if (balance === 0) {
+      const body = sql.substring(startIndex, i);
+      const name = rawName.replace(/[`"]/g, '').split('.').pop() || rawName;
+      blocks.push({ name, body });
+
+      // Advance regex to avoid re-matching inside body
+      startRegex.lastIndex = i + 1;
+    }
+  }
+  return blocks;
 }
