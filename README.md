@@ -3,7 +3,7 @@
 > Parse SQL + JSON schemas and design ERDs without leaving the editor.
 
 [![Install in VS Code](https://img.shields.io/badge/VS%20Code-Install%20Extension-007ACC?logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=dukeabaddon.erd-visualizer)
-[![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](#release-notes)
+[![Version](https://img.shields.io/badge/version-0.1.1-blue.svg)](#release-notes)
 [![Build Status](https://github.com/Dukeabaddon/ERD-Visualizer/actions/workflows/ci.yml/badge.svg)](https://github.com/Dukeabaddon/ERD-Visualizer/actions/workflows/ci.yml)
 
 ![Workflow demo](./demo.gif)
@@ -22,6 +22,12 @@ Launch the visualizer from the Command Palette (`ERD: Visualize current schema`)
 ---
 
 ## Release Notes
+
+### 0.1.1
+
+- Fixed parser issues with nested parentheses in SQL (e.g. `CHECK` constraints, `DEFAULT` functions).
+- Improved compatibility: Lowered minimum VS Code version to `1.85.0`.
+- Added support for Databricks/Spark SQL syntax.
 
 ### 0.1.0 (Preview)
 
