@@ -1,5 +1,9 @@
 <div align="center">
 
+<p>
+  <img src="assets/erd-visualizer-banner.png" alt="ERD Visualizer" width="100%" />
+</p>
+
 ### **Design, inspect, and export ERDs without leaving VS Code.**
 
 **ERD Visualizer** — parse SQL DDL or JSON schemas into an interactive entity-relationship diagram. Auto-detect tables, PK/FK links, and cardinality; pan/zoom/drag the canvas; export PNG / JPG / PDF for docs and PRs.
@@ -206,7 +210,8 @@ Layout keys under `erd.layout:*` live in workspace state and go away with the wo
 - Fix UTF-8 BOM / leading whitespace before JSON detection
 - Fix alternate JSON `attributes` objects and `primaryKey` arrays
 - Valid non-schema JSON (`{}` / `[]`) returns an empty model instead of SQL fallback
-- README refreshed (Marketplace installs badge = **total**)
+- README refreshed (Marketplace installs badge = **total** via vsmarketplacebadges)
+- Added README banner + logo assets (`assets/erd-visualizer-banner.png`, `assets/erd-visualizer-logo.png`); refreshed marketplace `icon.png`
 
 ### 0.1.2 / 0.1.1
 

@@ -12,10 +12,11 @@ All notable changes to this project will be documented in this file.
 ### Added
 - Jest adversarial suite (`src/features/erd-visualizer/parser.test.ts`) covering SQL dialects and JSON shapes
 - README: Marketplace total installs badge, input matrix, privacy / uninstall / star history
+- README banner + logo (`assets/erd-visualizer-banner.png`, `assets/erd-visualizer-logo.png`); refreshed `icon.png`
 
 ### Changed
 - Jest `testMatch` now picks up `src/**/*.test.ts` (previous config matched nothing under gitignored `test/`)
-
+- Marketplace badges use vsmarketplacebadges.dev (Shields.io VS Marketplace badges retired)
 ## [0.1.2] - 2026-01-27
 
 - Package bump / maintenance
