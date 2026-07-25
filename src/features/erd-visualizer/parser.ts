@@ -52,11 +52,12 @@ const SchemaShape = z.object({
 });
 
 export function parseSchemaFromText(text: string): SchemaModel {
-  const trimmed = text.trim();
+  // Strip UTF-8 BOM and outer whitespace so JSON detection stays reliable.
+  const trimmed = text.replace(/^\uFEFF/, '').trim();
   if (!trimmed) return { entities: [], relationships: [] };
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
     try {
-      const obj = JSON.parse(text);
+      const obj = JSON.parse(trimmed);
       // Accept canonical shape, but also try to normalize several alternate JSON ERD shapes
       let parsed = SchemaShape.safeParse(obj);
       // If parsed ok but entities have no columns (because input used `attributes`), try normalization
@@ -69,6 +70,10 @@ export function parseSchemaFromText(text: string): SchemaModel {
       if (normalized) {
         const parsedNorm = SchemaShape.safeParse(normalized);
         if (parsedNorm.success) return fromJsonShape(parsedNorm.data);
+      }
+      // Valid JSON that is not a schema (e.g. [] / {}) → empty model, not SQL fallback
+      if (obj !== null && typeof obj === 'object') {
+        return { entities: [], relationships: [] };
       }
     } catch (_) {
       // fallthrough to SQL
@@ -428,17 +433,33 @@ function normalizeAlternateJsonShape(obj: any) {
     }
     if (Array.isArray(entity.attributes)) {
       for (const attr of entity.attributes) {
-        if (!attr || seen.has(attr)) continue;
-        seen.add(attr);
-        columns.push({ name: attr });
+        const name =
+          typeof attr === 'string'
+            ? attr
+            : attr && typeof attr === 'object'
+              ? attr.name
+              : undefined;
+        if (!name || typeof name !== 'string' || seen.has(name)) continue;
+        seen.add(name);
+        columns.push({
+          name,
+          type: typeof attr === 'object' && attr ? attr.type : undefined,
+          primary: typeof attr === 'object' && attr ? !!attr.primary : false,
+        });
       }
     }
-    const primary = entity.primaryKey || columns.find(col => col.primary)?.name;
-    if (primary) {
-      const pk = columns.find(col => col.name === primary);
+    const primaryKeys = Array.isArray(entity.primaryKey)
+      ? entity.primaryKey.filter((k: unknown) => typeof k === 'string')
+      : typeof entity.primaryKey === 'string'
+        ? [entity.primaryKey]
+        : [];
+    for (const primary of primaryKeys) {
+      const pk = columns.find((col) => col.name === primary);
       if (pk) pk.primary = true;
       else columns.unshift({ name: primary, primary: true });
     }
+    const primary =
+      primaryKeys[0] || columns.find((col) => col.primary)?.name;
     const entry = { name: entity.name, columns };
     norm.entities.push(entry);
     entityLookup.set(entity.name, { original: entity, columns, primary });

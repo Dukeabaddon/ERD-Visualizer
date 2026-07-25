@@ -40,7 +40,7 @@ importers:
         specifier: ^24.10.1
         version: 24.10.1
       '@types/vscode':
-        specifier: ^1.106.0
+        specifier: ^1.85.0
         version: 1.106.1
       '@vscode/vsce':
         specifier: ^3.7.0
@@ -1766,6 +1766,7 @@ packages:
 
   '@ungap/structured-clone@1.3.0':
     resolution: {integrity: sha512-WmoN8qaIAo7WTYWbAZuG8PYEhn5fkz7dZrqTBZ7dtt//lL2Gwms1IcnQ5yHqjDfX8Ft5j4YzDM23f87zBfDe9g==}
+    deprecated: Potential CWE-502 - Update to 1.3.1 or higher
 
   '@vitejs/plugin-react@4.7.0':
     resolution: {integrity: sha512-gUu9hwfWvvEDBBmgtAowQCojwZmJ5mcLn3aufeCsitijs3+f2NsrPtlAWIR6OPiqljl96GVCUbLe0HyqIpVaoA==}

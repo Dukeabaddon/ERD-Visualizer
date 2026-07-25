@@ -3,7 +3,7 @@
   "displayName": "ERD Visualizer",
   "publisher": "dukeabaddon",
   "description": "Design, inspect, and export entity-relationship diagrams from SQL or JSON without leaving VS Code.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "main": "./out/extension.js",
   "icon": "icon.png",
   "galleryBanner": {

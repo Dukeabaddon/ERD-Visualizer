@@ -1,5 +1,17 @@
 module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
-  testMatch: ['**/test/**/*.test.ts'],
+  roots: ['<rootDir>/src'],
+  testMatch: ['**/*.test.ts'],
+  clearMocks: true,
+  transform: {
+    '^.+\\.tsx?$': [
+      'ts-jest',
+      {
+        diagnostics: {
+          ignoreCodes: [151002],
+        },
+      },
+    ],
+  },
 };
