@@ -14,8 +14,9 @@
 </div>
 
 <p align="center">
-  <a href="https://marketplace.visualstudio.com/items?itemName=dukeabaddon.erd-visualizer"><img src="https://img.shields.io/visual-studio-marketplace/v/dukeabaddon.erd-visualizer?label=VS%20Marketplace&color=007ACC&logo=visualstudiocode&logoColor=white" alt="VS Marketplace version"></a>&nbsp;
-  <a href="https://marketplace.visualstudio.com/items?itemName=dukeabaddon.erd-visualizer"><img src="https://img.shields.io/visual-studio-marketplace/i/dukeabaddon.erd-visualizer?label=installs&color=007ACC" alt="VS Marketplace installs (total)"></a>&nbsp;
+  <a href="https://marketplace.visualstudio.com/items?itemName=dukeabaddon.erd-visualizer"><img src="https://vsmarketplacebadges.dev/version/dukeabaddon.erd-visualizer.svg" alt="VS Marketplace version"></a>&nbsp;
+  <a href="https://marketplace.visualstudio.com/items?itemName=dukeabaddon.erd-visualizer"><img src="https://vsmarketplacebadges.dev/installs/dukeabaddon.erd-visualizer.svg" alt="VS Marketplace installs (total)"></a>&nbsp;
+  <a href="https://marketplace.visualstudio.com/items?itemName=dukeabaddon.erd-visualizer"><img src="https://vsmarketplacebadges.dev/downloads/dukeabaddon.erd-visualizer.svg" alt="VS Marketplace downloads (total)"></a>&nbsp;
   <a href="https://github.com/Dukeabaddon/ERD-Visualizer/stargazers"><img src="https://img.shields.io/github/stars/Dukeabaddon/ERD-Visualizer?style=social" alt="GitHub Stars"></a>&nbsp;
   <a href="https://github.com/Dukeabaddon/ERD-Visualizer/actions/workflows/ci.yml"><img src="https://github.com/Dukeabaddon/ERD-Visualizer/actions/workflows/ci.yml/badge.svg" alt="CI"></a>&nbsp;
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
